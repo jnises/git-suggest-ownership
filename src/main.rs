@@ -3,6 +3,7 @@ use git2::{
     BlameOptions, Diff, DiffFindOptions, DiffOptions, FileMode, ObjectType, Oid, Patch, Repository,
     TreeWalkMode, TreeWalkResult,
 };
+use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use std::{
     cell::RefCell,
@@ -17,12 +18,16 @@ use structopt::StructOpt;
     about = "List the files that currently have files that were changed by you. Sorted by percentage of lines you changed for each file."
 )]
 struct Opt {
+    #[structopt(short, long)]
+    reverse: bool,
+
     /// Verbose mode (-v, -vv, -vvv, etc), disables progress bar
     #[structopt(short, long, parse(from_occurrences))]
     verbose: usize,
 
-    #[structopt(short, long)]
-    reverse: bool,
+    /// Don't display a progress bar
+    #[structopt(long)]
+    no_progress: bool,
 }
 
 fn get_repo() -> Result<Repository> {
@@ -53,21 +58,31 @@ fn main() -> Result<()> {
         .ok_or_else(|| anyhow!("bad email configured"))?
         .to_string();
     let head = repo.head()?.peel_to_tree()?;
-    let mut files: Vec<(PathBuf, f64)> = vec![];
+    let progress = if opt.no_progress || opt.verbose > 0 {
+        ProgressBar::hidden()
+    } else {
+        ProgressBar::new_spinner()
+    };
+    let mut paths = vec![];
     head.walk(TreeWalkMode::PreOrder, |root, entry| {
-        //println!("{s}");
         if let Some(ObjectType::Blob) = entry.kind() {
             let path = PathBuf::from(format!("{root}{}", entry.name().unwrap()));
-            let (lines_by_user, total_lines) = get_lines_in_file(&repo, &path, &email).unwrap();
-            if lines_by_user > 0 && total_lines > 0 {
-                files.push((path, lines_by_user as f64 / total_lines as f64));
-            }
-            //entry.
-            //repo.blame_file(entry., opts)
-            //println!("{s} - {}", entry.name().unwrap_or_default());
+            paths.push(path);
         }
+        progress.tick();
         TreeWalkResult::Ok
     })?;
+    progress.set_style(ProgressStyle::default_bar());
+    progress.set_length(paths.len() as u64);
+    let mut files: Vec<_> = paths.into_iter().filter_map(|path| {
+        let (lines_by_user, total_lines) = get_lines_in_file(&repo, &path, &email).unwrap();
+        progress.inc(1);
+        if lines_by_user > 0 && total_lines > 0 {
+            Some((path, lines_by_user as f64 / total_lines as f64))
+        } else {
+            None
+        }
+    }).collect();
 
     files.sort_unstable_by(|(_, a), (_, b)| {
         let x = b.partial_cmp(a).unwrap();
