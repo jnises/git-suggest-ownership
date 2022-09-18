@@ -6,7 +6,6 @@ use git2::{
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-use thread_local::ThreadLocal;
 use std::{
     cell::RefCell,
     cmp,
@@ -14,12 +13,15 @@ use std::{
     path::{Path, PathBuf},
 };
 use structopt::StructOpt;
+use thread_local::ThreadLocal;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
-    about = "List the files that currently have files that were changed by you. Sorted by percentage of lines you changed for each file."
+    about = r#"List the files that currently have files that were changed by you.
+    Sorted by percentage of lines you changed for each file."#
 )]
 struct Opt {
+    /// Start with the files with the smallest percentage
     #[structopt(short, long)]
     reverse: bool,
 
@@ -31,7 +33,18 @@ struct Opt {
     #[structopt(long)]
     no_progress: bool,
 
-    // TODO add opt for email and name
+    /// Include all files, even the ones with no lines changed by you
+    #[structopt(short, long)]
+    all: bool,
+
+    /// Your email address. You can specify multiple. Defaults to your configured `config.email`
+    #[structopt(long)]
+    email: Vec<String>,
+
+    // TODO use this
+    /// Specify to limit the search to the current directory
+    #[structopt(short, long)]
+    cwd: bool,
 }
 
 fn get_repo() -> Result<Repository> {
@@ -39,7 +52,7 @@ fn get_repo() -> Result<Repository> {
 }
 
 /// returns (lines by user with email, total lines) for the file at path
-fn get_lines_in_file(repo: &Repository, path: &Path, email: &str) -> Result<(usize, usize)> {
+fn get_lines_in_file(repo: &Repository, path: &Path, emails: &Vec<String>) -> Result<(usize, usize)> {
     // TODO use mailmap
     let blame = repo.blame_file(path, None)?;
     Ok(blame.iter().fold((0, 0), |acc, hunk| {
@@ -47,7 +60,7 @@ fn get_lines_in_file(repo: &Repository, path: &Path, email: &str) -> Result<(usi
         let by_user = hunk
             .final_signature()
             .email()
-            .map(|e| e == email)
+            .map(|e| emails.iter().any(|x| x == e))
             .unwrap_or(false);
         (acc.0 + lines * by_user as usize, acc.1 + lines)
     }))
@@ -57,12 +70,15 @@ fn main() -> Result<()> {
     let opt = Opt::from_args();
     stderrlog::new().verbosity(opt.verbose).init()?;
     let repo = get_repo()?;
-    // TODO check name also
-    let email = repo
-        .signature()?
-        .email()
-        .ok_or_else(|| anyhow!("bad email configured"))?
-        .to_string();
+    let emails = if !opt.email.is_empty() {
+        opt.email.clone()
+    } else {
+        vec![repo
+            .signature()?
+            .email()
+            .ok_or_else(|| anyhow!("bad email configured"))?
+            .to_string()]
+    };
     let head = repo.head()?.peel_to_tree()?;
     let progress = if opt.no_progress || opt.verbose > 0 {
         ProgressBar::hidden()
@@ -80,16 +96,21 @@ fn main() -> Result<()> {
     progress.set_style(ProgressStyle::default_bar());
     progress.set_length(paths.len() as u64);
     let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
-    let mut files: Vec<_> = paths.par_iter().filter_map(|path| {
-        let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
-        let (lines_by_user, total_lines) = get_lines_in_file(&repo, &path, &email).expect("error blaming file");
-        progress.inc(1);
-        if lines_by_user > 0 && total_lines > 0 {
-            Some((path, lines_by_user as f64 / total_lines as f64))
-        } else {
-            None
-        }
-    }).collect();
+    // TODO limit max number of threads?
+    let mut files: Vec<_> = paths
+        .par_iter()
+        .filter_map(|path| {
+            let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
+            let (lines_by_user, total_lines) =
+                get_lines_in_file(&repo, &path, &emails).expect("error blaming file");
+            progress.inc(1);
+            if (opt.all || lines_by_user > 0) && total_lines > 0 {
+                Some((path, lines_by_user as f64 / total_lines as f64))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     files.sort_unstable_by(|(_, a), (_, b)| {
         let x = b.partial_cmp(a).unwrap();
