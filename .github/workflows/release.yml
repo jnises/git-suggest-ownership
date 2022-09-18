@@ -33,7 +33,7 @@ jobs:
           path: git-suggest-ownership.exe
 
   mac_build:
-    runs-on: macos-11
+    runs-on: macos-12
     steps:
       - uses: actions/checkout@v3
       - uses: actions/cache@v3
@@ -51,8 +51,9 @@ jobs:
           toolchain: stable
           target: aarch64-apple-darwin
       - name: Build aarch64
+        # getting sdk using xcrun to cross compile. is this still needed these days?
         run: |
-          SDKROOT=$(xcrun -sdk macosx11.1 --show-sdk-path) MACOSX_DEPLOYMENT_TARGET=$(xcrun -sdk macosx11.1 --show-sdk-platform-version) cargo build --release --target aarch64-apple-darwin
+          SDKROOT=$(xcrun -sdk macosx12.3 --show-sdk-path) MACOSX_DEPLOYMENT_TARGET=$(xcrun -sdk macosx12.3 --show-sdk-platform-version) cargo build --release --target aarch64-apple-darwin
           ARTIFACT="target/aarch64-apple-darwin/release/git-suggest-ownership"
           strip -S "$ARTIFACT"
           ditto -c -k --sequesterRsrc "$ARTIFACT" git-suggest-ownership_mac.zip
