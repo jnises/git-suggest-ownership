@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, warn, info};
+use log::{debug, info, warn};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
@@ -9,8 +9,8 @@ use thread_local::ThreadLocal;
 
 #[derive(Debug, StructOpt)]
 #[structopt(
-    about = r#"List the files that currently have files that were changed by you.
-    Sorted by percentage of lines you changed for each file."#
+    about = r#"List the files that currently have lines that were changed by you.
+Sorted by percentage of lines you changed for each file."#
 )]
 struct Opt {
     /// Start with the files with the smallest percentage
