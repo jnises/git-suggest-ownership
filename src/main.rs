@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, warn};
+use log::{debug, warn, info};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::path::{Path, PathBuf};
 use structopt::StructOpt;
@@ -40,10 +40,10 @@ fn get_repo() -> Result<Repository> {
 }
 
 /// returns (lines by user with email, total lines) for the file at path
-fn get_lines_in_file(
+fn get_lines_in_file<T: AsRef<str>>(
     repo: &Repository,
     path: &Path,
-    emails: &Vec<String>,
+    emails: &[T],
 ) -> Result<(usize, usize)> {
     let blame = repo.blame_file(path, Some(BlameOptions::new().use_mailmap(true)))?;
     Ok(blame.iter().fold((0, 0), |acc, hunk| {
@@ -51,7 +51,7 @@ fn get_lines_in_file(
         let by_user = hunk
             .final_signature()
             .email()
-            .map(|e| emails.iter().any(|x| x == e))
+            .map(|e| emails.iter().any(|x| x.as_ref() == e))
             .unwrap_or(false);
         (acc.0 + lines * by_user as usize, acc.1 + lines)
     }))
@@ -70,6 +70,7 @@ fn main() -> Result<()> {
             .ok_or_else(|| anyhow!("bad email configured"))?
             .to_string()]
     };
+    info!("Looking for lines made by email(s) {emails:?}");
     let head = repo.head()?.peel_to_tree()?;
     let progress = if opt.no_progress || opt.verbose > 0 {
         ProgressBar::hidden()
@@ -98,7 +99,7 @@ fn main() -> Result<()> {
             debug!("{}", path.to_string_lossy());
             let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
             let (lines_by_user, total_lines) =
-                get_lines_in_file(&repo, &path, &emails).expect("error blaming file");
+                get_lines_in_file(repo, path, &emails).expect("error blaming file");
             progress.inc(1);
             if (opt.all || lines_by_user > 0) && total_lines > 0 {
                 Some((path, lines_by_user as f64 / total_lines as f64))
