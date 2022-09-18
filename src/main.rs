@@ -40,11 +40,7 @@ struct Opt {
     /// Your email address. You can specify multiple. Defaults to your configured `config.email`
     #[structopt(long)]
     email: Vec<String>,
-
-    // TODO use this
-    /// Specify to limit the search to the current directory
-    #[structopt(short, long)]
-    cwd: bool,
+    // TODO add option to limit the search to only the current directory
 }
 
 fn get_repo() -> Result<Repository> {
@@ -52,9 +48,12 @@ fn get_repo() -> Result<Repository> {
 }
 
 /// returns (lines by user with email, total lines) for the file at path
-fn get_lines_in_file(repo: &Repository, path: &Path, emails: &Vec<String>) -> Result<(usize, usize)> {
-    // TODO use mailmap
-    let blame = repo.blame_file(path, None)?;
+fn get_lines_in_file(
+    repo: &Repository,
+    path: &Path,
+    emails: &Vec<String>,
+) -> Result<(usize, usize)> {
+    let blame = repo.blame_file(path, Some(BlameOptions::new().use_mailmap(true)))?;
     Ok(blame.iter().fold((0, 0), |acc, hunk| {
         let lines = hunk.lines_in_hunk();
         let by_user = hunk
