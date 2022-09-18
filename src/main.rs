@@ -1,17 +1,9 @@
-use anyhow::{anyhow, Context, Result};
-use git2::{
-    BlameOptions, Diff, DiffFindOptions, DiffOptions, FileMode, ObjectType, Oid, Patch, Repository,
-    TreeWalkMode, TreeWalkResult,
-};
+use anyhow::{anyhow, Result};
+use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, info, warn};
+use log::{debug, warn};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-use std::{
-    cell::RefCell,
-    cmp,
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 use structopt::StructOpt;
 use thread_local::ThreadLocal;
 
@@ -87,8 +79,12 @@ fn main() -> Result<()> {
     let mut paths = vec![];
     head.walk(TreeWalkMode::PreOrder, |root, entry| {
         if let Some(ObjectType::Blob) = entry.kind() {
-            let path = PathBuf::from(format!("{root}{}", entry.name().unwrap()));
-            paths.push(path);
+            if let Some(name) = entry.name() {
+                let path = PathBuf::from(format!("{root}{name}"));
+                paths.push(path);
+            } else {
+                warn!("no name for entry in {root}");
+            }
         }
         TreeWalkResult::Ok
     })?;
@@ -99,6 +95,7 @@ fn main() -> Result<()> {
     let mut files: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
+            debug!("{}", path.to_string_lossy());
             let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
             let (lines_by_user, total_lines) =
                 get_lines_in_file(&repo, &path, &emails).expect("error blaming file");
