@@ -5,6 +5,8 @@ Sorted by percentage of lines you changed for each file.
 
 Useful to figure out what parts of the code you could be _codeowner_ for.
 
+It does this by blaming each file in the repo. Which is quite slow unfortunately.
+
 # Usage
 ```bash
 cd pathtoyourrepo
