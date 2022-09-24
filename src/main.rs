@@ -99,7 +99,7 @@ fn print_tree_sorted_percentage(files: &Vec<File>, reverse: bool, all: bool) {
         name: &'a OsStr,
         lines_by_user: usize,
         total_lines: usize,
-        children: BTreeMap<&'a str, Box<Node<'a>>>,
+        children: BTreeMap<&'a OsStr, Box<Node<'a>>>,
     }
 
     impl<'a> Node<'a> {
@@ -125,7 +125,7 @@ fn print_tree_sorted_percentage(files: &Vec<File>, reverse: bool, all: bool) {
         for p in f.path.iter() {
             node = node
                 .children
-                .entry(p.to_str().unwrap())
+                .entry(p)
                 .or_insert_with(|| Box::new(Node::new(p)));
             node.lines_by_user += f.lines_by_user;
             node.total_lines += f.total_lines;
