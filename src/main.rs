@@ -136,7 +136,7 @@ fn print_tree_sorted_percentage(files: &Vec<File>, reverse: bool, all: bool) {
         println!(
             "{} - {:.1}%",
             node.name.to_string_lossy(),
-            node.lines_by_user as f64 / node.total_lines as f64 * 100.0
+            node.ratio_changed() * 100.0
         );
         let sorted_children = {
             let mut children: Vec<_> = node
