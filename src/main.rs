@@ -3,7 +3,11 @@ use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    ffi::OsStr,
+    path::{Path, PathBuf},
+};
 use structopt::StructOpt;
 use thread_local::ThreadLocal;
 
@@ -32,7 +36,10 @@ struct Opt {
     /// Your email address. You can specify multiple. Defaults to your configured `config.email`
     #[structopt(long)]
     email: Vec<String>,
-    // TODO add option to limit the search to only the current directory
+
+    /// Show percentage changed per directory
+    #[structopt(long)]
+    tree: bool,
 }
 
 fn get_repo() -> Result<Repository> {
@@ -55,6 +62,111 @@ fn get_lines_in_file<T: AsRef<str>>(
             .unwrap_or(false);
         (acc.0 + lines * by_user as usize, acc.1 + lines)
     }))
+}
+
+struct File<'a> {
+    path: &'a PathBuf,
+    lines_by_user: usize,
+    total_lines: usize,
+}
+
+impl<'a> File<'a> {
+    fn ratio_changed(&self) -> f64 {
+        self.lines_by_user as f64 / self.total_lines as f64
+    }
+}
+
+fn print_files_sorted_percentage(mut files: Vec<File>, reverse: bool, all: bool) {
+    files.sort_by(|a, b| {
+        let x = (b.ratio_changed()).partial_cmp(&a.ratio_changed()).unwrap();
+        if reverse {
+            x.reverse()
+        } else {
+            x
+        }
+    });
+    for file in files {
+        let ratio = file.ratio_changed();
+        if all || ratio > 0.0 {
+            println!("{:>5.1}% - {}", ratio * 100.0, file.path.to_string_lossy());
+        }
+    }
+}
+
+fn print_tree_sorted_percentage(files: &Vec<File>, reverse: bool, all: bool) {
+    #[derive(Default)]
+    struct Node<'a> {
+        name: &'a OsStr,
+        lines_by_user: usize,
+        total_lines: usize,
+        children: BTreeMap<&'a str, Box<Node<'a>>>,
+    }
+
+    impl<'a> Node<'a> {
+        fn ratio_changed(&self) -> f64 {
+            self.lines_by_user as f64 / self.total_lines as f64
+        }
+    }
+
+    impl<'a> Node<'a> {
+        fn new(name: &'a OsStr) -> Self {
+            Self {
+                name,
+                ..Default::default()
+            }
+        }
+    }
+
+    let mut root = Node::new(OsStr::new("/"));
+    for f in files {
+        let mut node = &mut root;
+        node.lines_by_user += f.lines_by_user;
+        node.total_lines += f.total_lines;
+        for p in f.path.iter() {
+            node = node
+                .children
+                .entry(p.to_str().unwrap())
+                .or_insert_with(|| Box::new(Node::new(p)));
+            node.lines_by_user += f.lines_by_user;
+            node.total_lines += f.total_lines;
+        }
+    }
+
+    fn print_node<'a>(node: &Node<'a>, reverse: bool, all: bool, prefix: &str) {
+        println!(
+            "{} - {:.1}%",
+            node.name.to_string_lossy(),
+            node.lines_by_user as f64 / node.total_lines as f64 * 100.0
+        );
+        let sorted_children = {
+            let mut children: Vec<_> = node
+                .children
+                .values()
+                .filter(|c| all || c.lines_by_user > 0)
+                .collect();
+            children.sort_by(|a, b| {
+                let x = (b.ratio_changed()).partial_cmp(&a.ratio_changed()).unwrap();
+                if reverse {
+                    x.reverse()
+                } else {
+                    x
+                }
+            });
+            children
+        };
+        let mut it = sorted_children.into_iter().peekable();
+        while let Some(child) = it.next() {
+            print!("{prefix}");
+            if it.peek().is_none() {
+                print!("╰── ");
+                print_node(child, reverse, all, &format!("{prefix}    "));
+            } else {
+                print!("├── ");
+                print_node(child, reverse, all, &format!("{prefix}│   "));
+            }
+        }
+    }
+    print_node(&root, reverse, all, "");
 }
 
 fn main() -> Result<()> {
@@ -92,8 +204,8 @@ fn main() -> Result<()> {
     progress.set_style(ProgressStyle::default_bar());
     progress.set_length(paths.len() as u64);
     let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
-    // TODO limit max number of threads?
-    let mut files: Vec<_> = paths
+    // TODO limit max number of threads? the user can set it using RAYON_NUM_THREADS by default
+    let files: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
             debug!("{}", path.to_string_lossy());
@@ -101,28 +213,22 @@ fn main() -> Result<()> {
             let (lines_by_user, total_lines) =
                 get_lines_in_file(repo, path, &emails).expect("error blaming file");
             progress.inc(1);
-            if (opt.all || lines_by_user > 0) && total_lines > 0 {
-                Some((path, lines_by_user as f64 / total_lines as f64))
+            if total_lines > 0 {
+                Some(File {
+                    path,
+                    lines_by_user,
+                    total_lines,
+                })
             } else {
                 None
             }
         })
         .collect();
 
-    files.sort_unstable_by(|(_, a), (_, b)| {
-        let x = b.partial_cmp(a).unwrap();
-        if opt.reverse {
-            x.reverse()
-        } else {
-            x
-        }
-    });
-    for (path, percentage_authored) in files {
-        println!(
-            "{:>5.1}% - {}",
-            percentage_authored * 100.0,
-            path.to_string_lossy()
-        );
+    if opt.tree {
+        print_tree_sorted_percentage(&files, opt.reverse, opt.all);
+    } else {
+        print_files_sorted_percentage(files, opt.reverse, opt.all);
     }
 
     Ok(())
