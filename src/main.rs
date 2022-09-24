@@ -4,6 +4,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::{
+    cmp::Ordering,
     collections::BTreeMap,
     ffi::OsStr,
     path::{Path, PathBuf},
@@ -78,7 +79,9 @@ impl<'a> File<'a> {
 
 fn print_files_sorted_percentage(mut files: Vec<File>, reverse: bool, all: bool) {
     files.sort_by(|a, b| {
-        let x = (b.ratio_changed()).partial_cmp(&a.ratio_changed()).unwrap();
+        let x = (b.ratio_changed())
+            .partial_cmp(&a.ratio_changed())
+            .unwrap_or(Ordering::Equal);
         if reverse {
             x.reverse()
         } else {
@@ -145,7 +148,9 @@ fn print_tree_sorted_percentage(files: &Vec<File>, reverse: bool, all: bool) {
                 .filter(|c| all || c.lines_by_user > 0)
                 .collect();
             children.sort_by(|a, b| {
-                let x = (b.ratio_changed()).partial_cmp(&a.ratio_changed()).unwrap();
+                let x = (b.ratio_changed())
+                    .partial_cmp(&a.ratio_changed())
+                    .unwrap_or(Ordering::Equal);
                 if reverse {
                     x.reverse()
                 } else {
@@ -208,11 +213,16 @@ fn main() -> Result<()> {
     let files: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
+            progress.inc(1);
             debug!("{}", path.to_string_lossy());
             let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
-            let (lines_by_user, total_lines) =
-                get_lines_in_file(repo, path, &emails).expect("error blaming file");
-            progress.inc(1);
+            let (lines_by_user, total_lines) = match get_lines_in_file(repo, path, &emails) {
+                Ok(x) => x,
+                Err(e) => {
+                    warn!("Error blaming file {} ({e})", path.to_string_lossy());
+                    return None;
+                }
+            };
             if total_lines > 0 {
                 Some(File {
                     path,
