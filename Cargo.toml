@@ -8,7 +8,7 @@ lto = "thin"
 
 [dependencies]
 anyhow = "1.0"
-structopt = "0.3"
+clap = { version = "3.2", features = ["derive"] }
 log = "0.4"
 stderrlog = "0.5"
 indicatif = "0.17"

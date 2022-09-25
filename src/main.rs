@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use clap::Parser;
 use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
@@ -9,37 +10,35 @@ use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
 };
-use structopt::StructOpt;
 use thread_local::ThreadLocal;
 
-#[derive(Debug, StructOpt)]
-#[structopt(
-    about = r#"List the files that currently have lines that were changed by you.
-Sorted by percentage of lines you changed for each file."#
-)]
+/// List the files that currently have lines that were changed by you.
+/// Sorted by percentage of lines you changed for each file.
+#[derive(Debug, Parser)]
+#[clap(author, version, about, long_about = None)]
 struct Opt {
     /// Start with the files with the smallest percentage
-    #[structopt(short, long)]
+    #[clap(short, long)]
     reverse: bool,
 
     /// Verbose mode (-v, -vv, -vvv, etc), disables progress bar
-    #[structopt(short, long, parse(from_occurrences))]
+    #[clap(short, long, parse(from_occurrences))]
     verbose: usize,
 
     /// Don't display a progress bar
-    #[structopt(long)]
+    #[clap(long)]
     no_progress: bool,
 
     /// Include all files, even the ones with no lines changed by you
-    #[structopt(short, long)]
+    #[clap(short, long)]
     all: bool,
 
     /// Your email address. You can specify multiple. Defaults to your configured `config.email`
-    #[structopt(long)]
+    #[clap(long)]
     email: Vec<String>,
 
     /// Show percentage changed per directory
-    #[structopt(long)]
+    #[clap(long)]
     tree: bool,
 }
 
