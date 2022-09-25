@@ -15,7 +15,7 @@ use thread_local::ThreadLocal;
 /// List the files that currently have lines that were changed by you.
 /// Sorted by percentage of lines you changed for each file.
 #[derive(Debug, Parser)]
-#[clap(author, version, about, long_about = None)]
+#[clap(version, about, long_about = None)]
 struct Opt {
     /// Start with the files with the smallest percentage
     #[clap(short, long)]

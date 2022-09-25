@@ -1,5 +1,6 @@
 [package]
 name = "git-suggest-ownership"
+authors = ["Joel Nises <joel.nises@gmail.com>"]
 version = "0.2.0"
 edition = "2021"
 
