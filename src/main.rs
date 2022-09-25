@@ -18,7 +18,7 @@ use thread_local::ThreadLocal;
 #[clap(version, about, long_about = None)]
 struct Opt {
     /// Start with the files with the smallest percentage
-    #[clap(short, long)]
+    #[clap(short, long, conflicts_with_all = &["show-authors", "num-authors"])]
     reverse: bool,
 
     /// Verbose mode (-v, -vv, -vvv, etc), disables progress bar
@@ -30,16 +30,23 @@ struct Opt {
     no_progress: bool,
 
     /// Include all files, even the ones with no lines changed by you
-    #[clap(short, long)]
+    #[clap(short, long, conflicts_with_all = &["show-authors", "num-authors"])]
     all: bool,
 
     /// Your email address. You can specify multiple. Defaults to your configured `config.email`
-    #[clap(long)]
+    #[clap(long, conflicts_with_all = &["show-authors", "num-authors"])]
     email: Vec<String>,
 
     /// Show percentage changed per directory
     #[clap(long)]
     tree: bool,
+
+    /// Show the top authors of each file or directory
+    #[clap(long, conflicts_with_all = &["email", "all", "reverse"])]
+    show_authors: bool,
+
+    #[clap(long, default_value_t = 3, conflicts_with_all = &["email", "all", "reverse"])]
+    num_authors: u32,
 }
 
 fn get_repo() -> Result<Repository> {
