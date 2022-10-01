@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use clap::Parser;
+use clap::{Parser, command};
 use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
@@ -15,30 +15,30 @@ use thread_local::ThreadLocal;
 /// List the files that currently have lines that were changed by you.
 /// Sorted by percentage of lines you changed for each file.
 #[derive(Debug, Parser)]
-#[clap(version, about, long_about = None)]
+#[command(version, about, long_about = None)]
 struct Opt {
     /// Start with the files with the smallest percentage
-    #[clap(short, long)]
+    #[arg(short, long)]
     reverse: bool,
 
     /// Verbose mode (-v, -vv, -vvv, etc), disables progress bar
-    #[clap(short, long, parse(from_occurrences))]
-    verbose: usize,
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
 
     /// Don't display a progress bar
-    #[clap(long)]
+    #[arg(long)]
     no_progress: bool,
 
     /// Include all files, even the ones with no lines changed by you
-    #[clap(short, long)]
+    #[arg(short, long)]
     all: bool,
 
     /// Your email address. You can specify multiple. Defaults to your configured `config.email`
-    #[clap(long)]
+    #[arg(long)]
     email: Vec<String>,
 
     /// Show percentage changed per directory
-    #[clap(long)]
+    #[arg(long)]
     tree: bool,
 }
 
@@ -174,8 +174,8 @@ fn print_tree_sorted_percentage(files: &Vec<File>, reverse: bool, all: bool) {
 }
 
 fn main() -> Result<()> {
-    let opt = Opt::from_args();
-    stderrlog::new().verbosity(opt.verbose).init()?;
+    let opt = Opt::parse();
+    stderrlog::new().verbosity(opt.verbose as usize).init()?;
     let repo = get_repo()?;
     let emails = if !opt.email.is_empty() {
         opt.email.clone()

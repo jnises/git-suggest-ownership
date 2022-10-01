@@ -6,10 +6,11 @@ edition = "2021"
 
 [profile.release]
 lto = "thin"
+panic = "abort"
 
 [dependencies]
 anyhow = "1.0"
-clap = { version = "3.2", features = ["derive"] }
+clap = { version = "4.0", features = ["derive"] }
 log = "0.4"
 stderrlog = "0.5"
 indicatif = "0.17"
