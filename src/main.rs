@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use clap::{Parser, command};
+use clap::{command, Parser};
 use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, info, warn};
