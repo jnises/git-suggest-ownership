@@ -48,7 +48,7 @@ struct Opt {
     show_authors: bool,
 
     #[arg(long, default_value_t = 3, conflicts_with_all = &["email", "all", "reverse"])]
-    num_authors: u32,
+    max_authors: u32,
 
     /// Limit to the specified directory. Defaults to the entire repo
     #[arg(long)]
@@ -384,14 +384,14 @@ fn main() -> Result<()> {
     trace!("done blaming");
     if opt.tree {
         if opt.show_authors {
-            print_tree_authors(&files, opt.num_authors as usize);
+            print_tree_authors(&files, opt.max_authors as usize);
         } else {
             print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
         }
     } else {
         #[allow(clippy::collapsible_else_if)]
         if opt.show_authors {
-            print_file_authors(&files, opt.num_authors as usize);
+            print_file_authors(&files, opt.max_authors as usize);
         } else {
             print_files_sorted_percentage(&files, &emails, opt.reverse, opt.all);
         }
