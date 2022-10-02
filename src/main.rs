@@ -8,7 +8,6 @@ use std::{
     cmp::Ordering,
     collections::BTreeMap,
     ffi::OsStr,
-    fmt::{Display, Formatter, Write},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -210,7 +209,7 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
         }
     }
 
-    fn print_node<'a>(node: &Node<'a>, reverse: bool, all: bool, prefix: &str) {
+    fn print_node(node: &Node, reverse: bool, all: bool, prefix: &str) {
         println!(
             "{} - {:.1}%",
             node.name.to_string_lossy(),
@@ -294,17 +293,18 @@ fn print_tree_authors(files: &[File], num_authors: usize) {
     fn print_node<'a>(node: &Node<'a>, prefix: &str, num_authors: usize) {
         print!("{} - (", node.name.to_string_lossy());
         node.contributions
-            .write_authors(&mut std::io::stdout(), num_authors).unwrap();
+            .write_authors(&mut std::io::stdout(), num_authors)
+            .unwrap();
         println!(")");
         let mut it = node.children.iter().peekable();
         while let Some((_, child)) = it.next() {
             print!("{prefix}");
             if it.peek().is_none() {
                 print!("╰── ");
-                print_node(&child, &format!("{prefix}    "), num_authors);
+                print_node(child, &format!("{prefix}    "), num_authors);
             } else {
                 print!("├── ");
-                print_node(&child, &format!("{prefix}│   "), num_authors);
+                print_node(child, &format!("{prefix}│   "), num_authors);
             }
         }
     }
@@ -398,6 +398,7 @@ fn main() -> Result<()> {
             print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
         }
     } else {
+        #[allow(clippy::collapsible_else_if)]
         if opt.show_authors {
             print_file_authors(&files, opt.num_authors as usize);
         } else {
