@@ -138,11 +138,11 @@ fn print_file_authors(files: &[File], num_authors: usize) {
                 )
             })
             .collect::<Vec<_>>();
-        authors.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+        authors.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(Ordering::Equal));
         authors.truncate(num_authors);
         print!("{} - [", f.path.to_string_lossy());
         for (email, contribution) in authors {
-            print!("({email}, {:>5.1}%)", contribution * 100.0);
+            print!("({email}, {:.1}%)", contribution * 100.0);
         }
         println!("]");
     }
