@@ -18,7 +18,7 @@ use thread_local::ThreadLocal;
 #[command(version, about, long_about = None)]
 struct Opt {
     /// Start with the files with the smallest percentage
-    #[arg(short, long, conflicts_with_all = &["show-authors", "num-authors"])]
+    #[arg(short, long, conflicts_with_all = &["show_authors", "num_authors"])]
     reverse: bool,
 
     /// Verbose mode (-v, -vv, -vvv, etc), disables progress bar
@@ -30,11 +30,11 @@ struct Opt {
     no_progress: bool,
 
     /// Include all files, even the ones with no lines changed by you
-    #[arg(short, long, conflicts_with_all = &["show-authors", "num-authors"])]
+    #[arg(short, long, conflicts_with_all = &["show_authors", "num_authors"])]
     all: bool,
 
     /// Your email address. You can specify multiple. Defaults to your configured `config.email`
-    #[arg(long, conflicts_with_all = &["show-authors", "num-authors"])]
+    #[arg(long, conflicts_with_all = &["show_authors", "num_authors"])]
     email: Vec<String>,
 
     /// Show percentage changed per directory
@@ -47,62 +47,77 @@ struct Opt {
 
     #[arg(long, default_value_t = 3, conflicts_with_all = &["email", "all", "reverse"])]
     num_authors: u32,
+
+    // TODO add option to limit to subdirectory
 }
 
 fn get_repo() -> Result<Repository> {
     Ok(Repository::discover(".")?)
 }
 
-/// returns (lines by user with email, total lines) for the file at path
-fn get_lines_in_file<T: AsRef<str>>(
-    repo: &Repository,
-    path: &Path,
-    emails: &[T],
-) -> Result<(usize, usize)> {
-    let blame = repo.blame_file(path, Some(BlameOptions::new().use_mailmap(true)))?;
-    Ok(blame.iter().fold((0, 0), |acc, hunk| {
-        let lines = hunk.lines_in_hunk();
-        let by_user = hunk
-            .final_signature()
-            .email()
-            .map(|e| emails.iter().any(|x| x.as_ref() == e))
-            .unwrap_or(false);
-        (acc.0 + lines * by_user as usize, acc.1 + lines)
-    }))
-}
-
-struct File<'a> {
-    path: &'a PathBuf,
-    lines_by_user: usize,
+#[derive(Default)]
+struct Contributions {
+    authors: BTreeMap<String, usize>,
     total_lines: usize,
 }
 
-impl<'a> File<'a> {
-    fn ratio_changed(&self) -> f64 {
-        self.lines_by_user as f64 / self.total_lines as f64
+impl Contributions {
+    // TODO max commit age arg?
+    fn try_from_path(repo: &Repository, path: &Path) -> Result<Self> {
+        let blame = repo.blame_file(&path, Some(BlameOptions::new().use_mailmap(true)))?;
+        Ok(blame.iter().fold(Self::default(), |mut acc, hunk| {
+            let lines = hunk.lines_in_hunk();
+            acc.total_lines += lines;
+            if let Some(email) = hunk.final_signature().email() {
+                *acc.authors.entry(email.into()).or_default() += lines;
+            } else {
+                // TODO keep track of unauthored hunks somehow?
+                warn!("hunk without email found in {}", path.to_string_lossy());
+            }
+            acc
+        }))
+    }
+
+    fn lines_by_user<S: AsRef<str>>(&self, author: &[S]) -> usize {
+        self
+            .authors
+            .iter()
+            .filter_map(|(key, value)| author.iter().any(|email| email.as_ref() == key).then_some(value))
+            .sum()
+    }
+
+    fn ratio_changed_by_user<S: AsRef<str>>(&self, author: &[S]) -> f64 {
+        let lines_by_user = self.lines_by_user(author);
+        lines_by_user as f64 / self.total_lines as f64
     }
 }
 
-fn print_files_sorted_percentage(mut files: Vec<File>, reverse: bool, all: bool) {
-    files.sort_by(|a, b| {
-        let x = (b.ratio_changed())
-            .partial_cmp(&a.ratio_changed())
-            .unwrap_or(Ordering::Equal);
+struct File<'a> {
+    path: &'a Path,
+    contributions: Contributions,
+}
+
+fn print_files_sorted_percentage<S: AsRef<str>>(files: &[File<'_>], author: &[S], reverse: bool, all: bool) {
+    let mut contributions_by_author = files
+        .iter()
+        .map(|f| (f.path, f.contributions.ratio_changed_by_user(author)))
+        .collect::<Vec<_>>();
+    contributions_by_author.sort_by(|(_, a), (_, b)| {
+        let x = b.partial_cmp(&a).unwrap_or(Ordering::Equal);
         if reverse {
             x.reverse()
         } else {
             x
         }
     });
-    for file in files {
-        let ratio = file.ratio_changed();
+    for (path, ratio) in contributions_by_author {
         if all || ratio > 0.0 {
-            println!("{:>5.1}% - {}", ratio * 100.0, file.path.to_string_lossy());
+            println!("{:>5.1}% - {}", ratio * 100.0, path.to_string_lossy());
         }
     }
 }
 
-fn print_tree_sorted_percentage(files: &Vec<File>, reverse: bool, all: bool) {
+fn print_tree_sorted_percentage<S: AsRef<str>>(files: &[File], author: &[S], reverse: bool, all: bool) {
     #[derive(Default)]
     struct Node<'a> {
         name: &'a OsStr,
@@ -129,15 +144,15 @@ fn print_tree_sorted_percentage(files: &Vec<File>, reverse: bool, all: bool) {
     let mut root = Node::new(OsStr::new("/"));
     for f in files {
         let mut node = &mut root;
-        node.lines_by_user += f.lines_by_user;
-        node.total_lines += f.total_lines;
+        node.lines_by_user += f.contributions.lines_by_user(author);
+        node.total_lines += f.contributions.total_lines;
         for p in f.path.iter() {
             node = node
                 .children
                 .entry(p)
                 .or_insert_with(|| Box::new(Node::new(p)));
-            node.lines_by_user += f.lines_by_user;
-            node.total_lines += f.total_lines;
+            node.lines_by_user += f.contributions.lines_by_user(author);
+            node.total_lines += f.contributions.total_lines;
         }
     }
 
@@ -222,18 +237,17 @@ fn main() -> Result<()> {
             progress.inc(1);
             debug!("{}", path.to_string_lossy());
             let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
-            let (lines_by_user, total_lines) = match get_lines_in_file(repo, path, &emails) {
-                Ok(x) => x,
+            let contributions = match Contributions::try_from_path(repo, path) {
+                Ok(c) => c,
                 Err(e) => {
                     warn!("Error blaming file {} ({e})", path.to_string_lossy());
                     return None;
                 }
             };
-            if total_lines > 0 {
+            if contributions.total_lines > 0 {
                 Some(File {
                     path,
-                    lines_by_user,
-                    total_lines,
+                    contributions,
                 })
             } else {
                 None
@@ -242,9 +256,9 @@ fn main() -> Result<()> {
         .collect();
 
     if opt.tree {
-        print_tree_sorted_percentage(&files, opt.reverse, opt.all);
+        print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
     } else {
-        print_files_sorted_percentage(files, opt.reverse, opt.all);
+        print_files_sorted_percentage(&files, &emails, opt.reverse, opt.all);
     }
 
     Ok(())
