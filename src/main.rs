@@ -38,6 +38,7 @@ struct Opt {
     #[arg(long, conflicts_with_all = &["show_authors", "num_authors"])]
     email: Vec<String>,
 
+    // TODO add option to limit the depth of tree printed
     /// Show percentage changed per directory
     #[arg(long)]
     tree: bool,
@@ -143,25 +144,11 @@ fn print_files_sorted_percentage<S: AsRef<str>>(
 
 fn print_file_authors(files: &[File], num_authors: usize) {
     for f in files {
-        let mut authors = f
-            .contributions
-            .authors
-            .iter()
-            .map(|(email, lines)| {
-                (
-                    email.clone(),
-                    *lines as f64 / f.contributions.total_lines as f64,
-                )
-            })
-            .collect::<Vec<_>>();
-        authors.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(Ordering::Equal));
-        authors.truncate(num_authors);
-        let author_str = authors
-            .into_iter()
-            .map(|(email, contribution)| format!("{email}: {:.1}%", contribution * 100.0))
-            .collect::<Vec<_>>()
-            .join(", ");
-        println!("{} - ({author_str})", f.path.display());
+        println!(
+            "{} - ({})",
+            f.path.display(),
+            f.contributions.authors_str(num_authors)
+        );
     }
 }
 
@@ -291,7 +278,11 @@ fn print_tree_authors(files: &[File], num_authors: usize) {
     }
 
     fn print_node<'a>(node: &Node<'a>, prefix: &str, num_authors: usize) {
-        println!("{} - ({})", node.name.to_string_lossy(), node.contributions.authors_str(num_authors));
+        println!(
+            "{} - ({})",
+            node.name.to_string_lossy(),
+            node.contributions.authors_str(num_authors)
+        );
         let mut it = node.children.iter().peekable();
         while let Some((_, child)) = it.next() {
             print!("{prefix}");
@@ -392,7 +383,6 @@ fn main() -> Result<()> {
         .collect();
     trace!("done blaming");
     if opt.tree {
-        // TODO show authors in the tree case as well
         if opt.show_authors {
             print_tree_authors(&files, opt.num_authors as usize);
         } else {
