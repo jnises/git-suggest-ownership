@@ -101,7 +101,7 @@ struct File<'a> {
 }
 
 fn print_files_sorted_percentage<S: AsRef<str>>(
-    files: &[File<'_>],
+    files: &[File],
     author: &[S],
     reverse: bool,
     all: bool,
@@ -125,7 +125,7 @@ fn print_files_sorted_percentage<S: AsRef<str>>(
     }
 }
 
-fn print_file_authors(files: &[File<'_>], num_authors: usize) {
+fn print_file_authors(files: &[File], num_authors: usize) {
     for f in files {
         let mut authors = f
             .contributions
