@@ -125,6 +125,29 @@ fn print_files_sorted_percentage<S: AsRef<str>>(
     }
 }
 
+fn print_file_authors(files: &[File<'_>], num_authors: usize) {
+    for f in files {
+        let mut authors = f
+            .contributions
+            .authors
+            .iter()
+            .map(|(email, lines)| {
+                (
+                    email.clone(),
+                    *lines as f64 / f.contributions.total_lines as f64,
+                )
+            })
+            .collect::<Vec<_>>();
+        authors.sort_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(Ordering::Equal));
+        authors.truncate(num_authors);
+        print!("{} - [", f.path.to_string_lossy());
+        for (email, contribution) in authors {
+            print!("({email}, {:>5.1}%)", contribution * 100.0);
+        }
+        println!("]");
+    }
+}
+
 fn print_tree_sorted_percentage<S: AsRef<str>>(
     files: &[File],
     author: &[S],
@@ -288,9 +311,14 @@ fn main() -> Result<()> {
         .collect();
     trace!("done blaming");
     if opt.tree {
+        // TODO show authors in the tree case as well
         print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
     } else {
-        print_files_sorted_percentage(&files, &emails, opt.reverse, opt.all);
+        if opt.show_authors {
+            print_file_authors(&files, opt.num_authors as usize);
+        } else {
+            print_files_sorted_percentage(&files, &emails, opt.reverse, opt.all);
+        }
     }
 
     Ok(())
