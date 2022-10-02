@@ -145,7 +145,7 @@ fn print_files_sorted_percentage<S: AsRef<str>>(
 fn print_file_authors(files: &[File], num_authors: usize) {
     for f in files {
         println!(
-            "{} - ({})",
+            "{} - {}",
             f.path.display(),
             f.contributions.authors_str(num_authors)
         );
@@ -279,7 +279,7 @@ fn print_tree_authors(files: &[File], num_authors: usize) {
 
     fn print_node<'a>(node: &Node<'a>, prefix: &str, num_authors: usize) {
         println!(
-            "{} - ({})",
+            "{} - {}",
             node.name.to_string_lossy(),
             node.contributions.authors_str(num_authors)
         );
