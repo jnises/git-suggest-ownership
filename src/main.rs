@@ -8,6 +8,7 @@ use std::{
     cmp::Ordering,
     collections::BTreeMap,
     ffi::OsStr,
+    fmt::{Display, Formatter, Write},
     path::{Path, PathBuf},
     str::FromStr,
 };
@@ -92,6 +93,22 @@ impl Contributions {
     fn ratio_changed_by_user<S: AsRef<str>>(&self, author: &[S]) -> f64 {
         let lines_by_user = self.lines_by_user(author);
         lines_by_user as f64 / self.total_lines as f64
+    }
+
+    fn write_authors<W: std::io::Write>(&self, f: &mut W, num_authors: usize) -> Result<()> {
+        let mut authors = self
+            .authors
+            .iter()
+            .map(|(email, lines)| (email.clone(), *lines as f64 / self.total_lines as f64))
+            .collect::<Vec<_>>();
+        authors.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(Ordering::Equal));
+        authors.truncate(num_authors);
+        let author_str = authors
+            .into_iter()
+            .map(|(email, contribution)| format!("{email}: {:.1}%", contribution * 100.0))
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(write!(f, "({author_str})")?)
     }
 }
 
@@ -232,6 +249,68 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
     print_node(&root, reverse, all, "");
 }
 
+fn print_tree_authors(files: &[File], num_authors: usize) {
+    #[derive(Default)]
+    struct Node<'a> {
+        // TODO is this needed?
+        name: &'a OsStr,
+        contributions: Contributions,
+        children: BTreeMap<&'a OsStr, Box<Node<'a>>>,
+    }
+
+    impl<'a> Node<'a> {
+        fn new(name: &'a OsStr) -> Self {
+            Self {
+                name,
+                ..Default::default()
+            }
+        }
+
+        fn add_contribution(&mut self, contributions: &Contributions) {
+            self.contributions.total_lines += contributions.total_lines;
+            for (author, lines) in &contributions.authors {
+                *self
+                    .contributions
+                    .authors
+                    .entry(author.clone())
+                    .or_default() += lines;
+            }
+        }
+    }
+
+    let mut root = Node::new(OsStr::new("/"));
+    for f in files {
+        let mut node = &mut root;
+        node.add_contribution(&f.contributions);
+        for p in f.path.iter() {
+            node = node
+                .children
+                .entry(p)
+                .or_insert_with(|| Box::new(Node::new(p)));
+            node.add_contribution(&f.contributions);
+        }
+    }
+
+    fn print_node<'a>(node: &Node<'a>, prefix: &str, num_authors: usize) {
+        print!("{} - (", node.name.to_string_lossy());
+        node.contributions
+            .write_authors(&mut std::io::stdout(), num_authors).unwrap();
+        println!(")");
+        let mut it = node.children.iter().peekable();
+        while let Some((_, child)) = it.next() {
+            print!("{prefix}");
+            if it.peek().is_none() {
+                print!("╰── ");
+                print_node(&child, &format!("{prefix}    "), num_authors);
+            } else {
+                print!("├── ");
+                print_node(&child, &format!("{prefix}│   "), num_authors);
+            }
+        }
+    }
+    print_node(&root, "", num_authors);
+}
+
 fn main() -> Result<()> {
     let opt = Opt::parse();
     let root = opt
@@ -313,7 +392,11 @@ fn main() -> Result<()> {
     trace!("done blaming");
     if opt.tree {
         // TODO show authors in the tree case as well
-        print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
+        if opt.show_authors {
+            print_tree_authors(&files, opt.num_authors as usize);
+        } else {
+            print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
+        }
     } else {
         if opt.show_authors {
             print_file_authors(&files, opt.num_authors as usize);
