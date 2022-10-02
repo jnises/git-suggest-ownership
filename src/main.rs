@@ -2,13 +2,14 @@ use anyhow::{anyhow, Result};
 use clap::{command, Parser};
 use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, info, warn, trace};
+use log::{debug, info, trace, warn};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::{
     cmp::Ordering,
     collections::BTreeMap,
     ffi::OsStr,
-    path::{Path, PathBuf}, str::FromStr,
+    path::{Path, PathBuf},
+    str::FromStr,
 };
 use thread_local::ThreadLocal;
 
@@ -209,11 +210,12 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
 
 fn main() -> Result<()> {
     let opt = Opt::parse();
-    let root = opt.dir.unwrap_or_else(|| PathBuf::from_str(".").unwrap());
+    let root = opt
+        .dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from_str(".").unwrap());
     stderrlog::new().verbosity(opt.verbose as usize).init()?;
-    let get_repo = || -> Result<_> {
-        Ok(Repository::discover(&root)?)
-    };
+    let get_repo = || -> Result<_> { Ok(Repository::discover(&root)?) };
 
     let repo = get_repo()?;
     let emails = if !opt.email.is_empty() {
@@ -240,7 +242,11 @@ fn main() -> Result<()> {
                 if path.starts_with(&root) {
                     paths.push(path);
                 } else {
-                    debug!("{} not in {}. skipping.", path.to_string_lossy(), root.to_string_lossy());
+                    debug!(
+                        "{} not in {}. skipping.",
+                        path.to_string_lossy(),
+                        root.to_string_lossy()
+                    );
                 }
             } else {
                 warn!("no name for entry in {dir}");
@@ -248,7 +254,11 @@ fn main() -> Result<()> {
         }
         TreeWalkResult::Ok
     })?;
-    info!("blaming {paths:?}");
+    if opt.dir.is_some() {
+        info!("blaming limited to: {paths:?}");
+    } else {
+        info!("blaming all paths");
+    }
     progress.set_style(ProgressStyle::default_bar());
     progress.set_length(paths.len() as u64);
     let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
