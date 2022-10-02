@@ -71,7 +71,7 @@ impl Contributions {
                 *acc.authors.entry(email.into()).or_default() += lines;
             } else {
                 // TODO keep track of unauthored hunks somehow?
-                warn!("hunk without email found in {}", path.to_string_lossy());
+                warn!("hunk without email found in {}", path.display());
             }
             acc
         }))
@@ -136,7 +136,7 @@ fn print_files_sorted_percentage<S: AsRef<str>>(
     });
     for (path, ratio) in contributions_by_author {
         if all || ratio > 0.0 {
-            println!("{:>5.1}% - {}", ratio * 100.0, path.to_string_lossy());
+            println!("{:>5.1}% - {}", ratio * 100.0, path.display());
         }
     }
 }
@@ -161,7 +161,7 @@ fn print_file_authors(files: &[File], num_authors: usize) {
             .map(|(email, contribution)| format!("{email}: {:.1}%", contribution * 100.0))
             .collect::<Vec<_>>()
             .join(", ");
-        println!("{} - ({author_str})", f.path.to_string_lossy());
+        println!("{} - ({author_str})", f.path.display());
     }
 }
 
@@ -313,14 +313,17 @@ fn print_tree_authors(files: &[File], num_authors: usize) {
 
 fn main() -> Result<()> {
     let opt = Opt::parse();
+    stderrlog::new().verbosity(opt.verbose as usize).init()?;
     let root = opt
         .dir
         .clone()
         .unwrap_or_else(|| PathBuf::from_str(".").unwrap());
-    stderrlog::new().verbosity(opt.verbose as usize).init()?;
+    let canonical_root = root.canonicalize()?;
+    info!("dir: {}", root.display());
     let get_repo = || -> Result<_> { Ok(Repository::discover(&root)?) };
 
     let repo = get_repo()?;
+    info!("repo: {}", repo.path().display());
     let emails = if !opt.email.is_empty() {
         opt.email.clone()
     } else {
@@ -342,14 +345,16 @@ fn main() -> Result<()> {
         if let Some(ObjectType::Blob) = entry.kind() {
             if let Some(name) = entry.name() {
                 let path = PathBuf::from(format!("{dir}{name}"));
-                if path.starts_with(&root) {
+                let canonical_path = if let Ok(cpath) = path.canonicalize() {
+                    cpath
+                } else {
+                    warn!("unable to get canonical version of {}", path.display());
+                    return TreeWalkResult::Ok;
+                };
+                if canonical_path.starts_with(&canonical_root) {
                     paths.push(path);
                 } else {
-                    debug!(
-                        "{} not in {}. skipping.",
-                        path.to_string_lossy(),
-                        root.to_string_lossy()
-                    );
+                    debug!("{} not in {} skipping.", path.display(), root.display());
                 }
             } else {
                 warn!("no name for entry in {dir}");
@@ -370,12 +375,12 @@ fn main() -> Result<()> {
         .par_iter()
         .filter_map(|path| {
             progress.inc(1);
-            debug!("blaming {}", path.to_string_lossy());
+            debug!("blaming {}", path.display());
             let repo = repo_tls.get_or_try(&get_repo).expect("unable to get repo");
             let contributions = match Contributions::try_from_path(repo, path) {
                 Ok(c) => c,
                 Err(e) => {
-                    warn!("Error blaming file {} ({e})", path.to_string_lossy());
+                    warn!("Error blaming file {} ({e})", path.display());
                     return None;
                 }
             };
