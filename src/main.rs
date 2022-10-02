@@ -47,7 +47,6 @@ struct Opt {
 
     #[arg(long, default_value_t = 3, conflicts_with_all = &["email", "all", "reverse"])]
     num_authors: u32,
-
     // TODO add option to limit to subdirectory
 }
 
@@ -64,7 +63,7 @@ struct Contributions {
 impl Contributions {
     // TODO max commit age arg?
     fn try_from_path(repo: &Repository, path: &Path) -> Result<Self> {
-        let blame = repo.blame_file(&path, Some(BlameOptions::new().use_mailmap(true)))?;
+        let blame = repo.blame_file(path, Some(BlameOptions::new().use_mailmap(true)))?;
         Ok(blame.iter().fold(Self::default(), |mut acc, hunk| {
             let lines = hunk.lines_in_hunk();
             acc.total_lines += lines;
@@ -79,10 +78,14 @@ impl Contributions {
     }
 
     fn lines_by_user<S: AsRef<str>>(&self, author: &[S]) -> usize {
-        self
-            .authors
+        self.authors
             .iter()
-            .filter_map(|(key, value)| author.iter().any(|email| email.as_ref() == key).then_some(value))
+            .filter_map(|(key, value)| {
+                author
+                    .iter()
+                    .any(|email| email.as_ref() == key)
+                    .then_some(value)
+            })
             .sum()
     }
 
@@ -97,13 +100,18 @@ struct File<'a> {
     contributions: Contributions,
 }
 
-fn print_files_sorted_percentage<S: AsRef<str>>(files: &[File<'_>], author: &[S], reverse: bool, all: bool) {
+fn print_files_sorted_percentage<S: AsRef<str>>(
+    files: &[File<'_>],
+    author: &[S],
+    reverse: bool,
+    all: bool,
+) {
     let mut contributions_by_author = files
         .iter()
         .map(|f| (f.path, f.contributions.ratio_changed_by_user(author)))
         .collect::<Vec<_>>();
     contributions_by_author.sort_by(|(_, a), (_, b)| {
-        let x = b.partial_cmp(&a).unwrap_or(Ordering::Equal);
+        let x = b.partial_cmp(a).unwrap_or(Ordering::Equal);
         if reverse {
             x.reverse()
         } else {
@@ -117,7 +125,12 @@ fn print_files_sorted_percentage<S: AsRef<str>>(files: &[File<'_>], author: &[S]
     }
 }
 
-fn print_tree_sorted_percentage<S: AsRef<str>>(files: &[File], author: &[S], reverse: bool, all: bool) {
+fn print_tree_sorted_percentage<S: AsRef<str>>(
+    files: &[File],
+    author: &[S],
+    reverse: bool,
+    all: bool,
+) {
     #[derive(Default)]
     struct Node<'a> {
         name: &'a OsStr,
