@@ -2,13 +2,13 @@ use anyhow::{anyhow, Result};
 use clap::{command, Parser};
 use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, info, warn};
+use log::{debug, info, warn, trace};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::{
     cmp::Ordering,
     collections::BTreeMap,
     ffi::OsStr,
-    path::{Path, PathBuf},
+    path::{Path, PathBuf}, str::FromStr,
 };
 use thread_local::ThreadLocal;
 
@@ -47,11 +47,10 @@ struct Opt {
 
     #[arg(long, default_value_t = 3, conflicts_with_all = &["email", "all", "reverse"])]
     num_authors: u32,
-    // TODO add option to limit to subdirectory
-}
 
-fn get_repo() -> Result<Repository> {
-    Ok(Repository::discover(".")?)
+    /// Limit to the specified directory. Defaults to the entire repo
+    #[arg(long)]
+    dir: Option<PathBuf>,
 }
 
 #[derive(Default)]
@@ -210,7 +209,12 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
 
 fn main() -> Result<()> {
     let opt = Opt::parse();
+    let root = opt.dir.unwrap_or_else(|| PathBuf::from_str(".").unwrap());
     stderrlog::new().verbosity(opt.verbose as usize).init()?;
+    let get_repo = || -> Result<_> {
+        Ok(Repository::discover(&root)?)
+    };
+
     let repo = get_repo()?;
     let emails = if !opt.email.is_empty() {
         opt.email.clone()
@@ -229,17 +233,22 @@ fn main() -> Result<()> {
         ProgressBar::new_spinner()
     };
     let mut paths = vec![];
-    head.walk(TreeWalkMode::PreOrder, |root, entry| {
+    head.walk(TreeWalkMode::PreOrder, |dir, entry| {
         if let Some(ObjectType::Blob) = entry.kind() {
             if let Some(name) = entry.name() {
-                let path = PathBuf::from(format!("{root}{name}"));
-                paths.push(path);
+                let path = PathBuf::from(format!("{dir}{name}"));
+                if path.starts_with(&root) {
+                    paths.push(path);
+                } else {
+                    debug!("{} not in {}. skipping.", path.to_string_lossy(), root.to_string_lossy());
+                }
             } else {
-                warn!("no name for entry in {root}");
+                warn!("no name for entry in {dir}");
             }
         }
         TreeWalkResult::Ok
     })?;
+    info!("blaming {paths:?}");
     progress.set_style(ProgressStyle::default_bar());
     progress.set_length(paths.len() as u64);
     let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
@@ -248,8 +257,8 @@ fn main() -> Result<()> {
         .par_iter()
         .filter_map(|path| {
             progress.inc(1);
-            debug!("{}", path.to_string_lossy());
-            let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
+            debug!("blaming {}", path.to_string_lossy());
+            let repo = repo_tls.get_or_try(&get_repo).expect("unable to get repo");
             let contributions = match Contributions::try_from_path(repo, path) {
                 Ok(c) => c,
                 Err(e) => {
@@ -267,7 +276,7 @@ fn main() -> Result<()> {
             }
         })
         .collect();
-
+    trace!("done blaming");
     if opt.tree {
         print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
     } else {
