@@ -361,10 +361,11 @@ fn main() -> Result<()> {
     let files: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
-            progress.inc(1);
             debug!("blaming {}", path.display());
             let repo = repo_tls.get_or_try(&get_repo).expect("unable to get repo");
-            let contributions = match Contributions::try_from_path(repo, path) {
+            let contributions = Contributions::try_from_path(repo, path);
+            progress.inc(1);
+            let contributions = match contributions {
                 Ok(c) => c,
                 Err(e) => {
                     warn!("Error blaming file {} ({e})", path.display());
