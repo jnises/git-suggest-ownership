@@ -94,7 +94,7 @@ impl Contributions {
         lines_by_user as f64 / self.total_lines as f64
     }
 
-    fn write_authors<W: std::io::Write>(&self, f: &mut W, num_authors: usize) -> Result<()> {
+    fn authors_str(&self, num_authors: usize) -> String {
         let mut authors = self
             .authors
             .iter()
@@ -107,7 +107,7 @@ impl Contributions {
             .map(|(email, contribution)| format!("{email}: {:.1}%", contribution * 100.0))
             .collect::<Vec<_>>()
             .join(", ");
-        Ok(write!(f, "({author_str})")?)
+        format!("({author_str})")
     }
 }
 
@@ -291,11 +291,7 @@ fn print_tree_authors(files: &[File], num_authors: usize) {
     }
 
     fn print_node<'a>(node: &Node<'a>, prefix: &str, num_authors: usize) {
-        print!("{} - (", node.name.to_string_lossy());
-        node.contributions
-            .write_authors(&mut std::io::stdout(), num_authors)
-            .unwrap();
-        println!(")");
+        println!("{} - ({})", node.name.to_string_lossy(), node.contributions.authors_str(num_authors));
         let mut it = node.children.iter().peekable();
         while let Some((_, child)) = it.next() {
             print!("{prefix}");
