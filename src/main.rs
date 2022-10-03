@@ -37,7 +37,6 @@ struct Opt {
     #[arg(long, conflicts_with_all = &["show_authors", "max_authors"])]
     email: Vec<String>,
 
-    // TODO add option to limit the depth of tree printed
     /// Show percentage changed per file
     #[arg(long)]
     flat: bool,
@@ -52,6 +51,8 @@ struct Opt {
     /// Limit to the specified directory. Defaults to the entire repo.
     #[arg(long)]
     dir: Option<PathBuf>,
+
+    // TODO add option to limit the depth of tree printed
 }
 
 #[derive(Default)]
