@@ -2,7 +2,7 @@ use anyhow::{anyhow, Result};
 use clap::{command, Parser};
 use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
-use log::{debug, info, trace, warn};
+use log::{debug, error, info, trace, warn};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::{
     cmp::Ordering,
@@ -13,8 +13,7 @@ use std::{
 };
 use thread_local::ThreadLocal;
 
-/// List the files that currently have lines that were changed by you.
-/// Sorted by percentage of lines you changed for each file.
+/// List the files and directories that currently have lines that were changed by you.
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
 struct Opt {
@@ -38,10 +37,9 @@ struct Opt {
     #[arg(long, conflicts_with_all = &["show_authors", "max_authors"])]
     email: Vec<String>,
 
-    // TODO add option to limit the depth of tree printed
-    /// Show percentage changed per directory
+    /// Show percentage changed per file
     #[arg(long)]
-    tree: bool,
+    flat: bool,
 
     /// Show the top authors of each file or directory
     #[arg(long, conflicts_with_all = &["email", "all", "reverse"])]
@@ -50,9 +48,10 @@ struct Opt {
     #[arg(long, default_value_t = 3, conflicts_with_all = &["email", "all", "reverse"], requires = "show_authors")]
     max_authors: u32,
 
-    /// Limit to the specified directory. Defaults to the entire repo
+    /// Limit to the specified directory. Defaults to the entire repo.
     #[arg(long)]
     dir: Option<PathBuf>,
+    // TODO add option to limit the depth of tree printed
 }
 
 #[derive(Default)]
@@ -224,7 +223,7 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
         while let Some(child) = it.next() {
             print!("{prefix}");
             if it.peek().is_none() {
-                print!("╰── ");
+                print!("└── ");
                 print_node(child, reverse, all, &format!("{prefix}    "));
             } else {
                 print!("├── ");
@@ -287,7 +286,7 @@ fn print_tree_authors(files: &[File], num_authors: usize) {
         while let Some((_, child)) = it.next() {
             print!("{prefix}");
             if it.peek().is_none() {
-                print!("╰── ");
+                print!("└── ");
                 print_node(child, &format!("{prefix}    "), num_authors);
             } else {
                 print!("├── ");
@@ -301,16 +300,18 @@ fn print_tree_authors(files: &[File], num_authors: usize) {
 fn main() -> Result<()> {
     let opt = Opt::parse();
     stderrlog::new().verbosity(opt.verbose as usize).init()?;
+    let limit_dir = opt.dir.is_some();
     let root = opt
         .dir
         .clone()
         .unwrap_or_else(|| PathBuf::from_str(".").unwrap());
     let canonical_root = root.canonicalize()?;
-    info!("dir: {}", root.display());
+    info!("dir: {}", canonical_root.display());
     let get_repo = || -> Result<_> { Ok(Repository::discover(&root)?) };
 
     let repo = get_repo()?;
-    info!("repo: {}", repo.path().display());
+    let repo_root = repo.workdir().unwrap_or_else(|| repo.path());
+    info!("repo: {}", repo_root.display());
     let emails = if !opt.email.is_empty() {
         opt.email.clone()
     } else {
@@ -332,16 +333,24 @@ fn main() -> Result<()> {
         if let Some(ObjectType::Blob) = entry.kind() {
             if let Some(name) = entry.name() {
                 let path = PathBuf::from(format!("{dir}{name}"));
-                let canonical_path = if let Ok(cpath) = path.canonicalize() {
-                    cpath
+                if limit_dir {
+                    let canonical_path = if let Ok(cpath) = repo_root.join(&path).canonicalize() {
+                        cpath
+                    } else {
+                        error!("unable to get canonical version of {}", path.display());
+                        return TreeWalkResult::Ok;
+                    };
+                    if canonical_path.starts_with(&canonical_root) {
+                        paths.push(path);
+                    } else {
+                        debug!(
+                            "{} not in {} skipping.",
+                            path.display(),
+                            canonical_root.display()
+                        );
+                    }
                 } else {
-                    warn!("unable to get canonical version of {}", path.display());
-                    return TreeWalkResult::Ok;
-                };
-                if canonical_path.starts_with(&canonical_root) {
                     paths.push(path);
-                } else {
-                    debug!("{} not in {} skipping.", path.display(), root.display());
                 }
             } else {
                 warn!("no name for entry in {dir}");
@@ -382,19 +391,20 @@ fn main() -> Result<()> {
             }
         })
         .collect();
+    progress.finish_and_clear();
     trace!("done blaming");
-    if opt.tree {
-        if opt.show_authors {
-            print_tree_authors(&files, opt.max_authors as usize);
-        } else {
-            print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
-        }
-    } else {
-        #[allow(clippy::collapsible_else_if)]
+    if opt.flat {
         if opt.show_authors {
             print_file_authors(&files, opt.max_authors as usize);
         } else {
             print_files_sorted_percentage(&files, &emails, opt.reverse, opt.all);
+        }
+    } else {
+        #[allow(clippy::collapsible_else_if)]
+        if opt.show_authors {
+            print_tree_authors(&files, opt.max_authors as usize);
+        } else {
+            print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
         }
     }
 

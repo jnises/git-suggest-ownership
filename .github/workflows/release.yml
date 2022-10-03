@@ -62,6 +62,8 @@ jobs:
           name: git-suggest-ownership_mac.zip
           path: git-suggest-ownership_mac.zip          
 
+  # TODO add linux target
+
   release:
     needs: [win_build, mac_build]
     runs-on: ubuntu-latest
