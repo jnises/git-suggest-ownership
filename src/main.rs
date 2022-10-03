@@ -51,7 +51,6 @@ struct Opt {
     /// Limit to the specified directory. Defaults to the entire repo.
     #[arg(long)]
     dir: Option<PathBuf>,
-
     // TODO add option to limit the depth of tree printed
 }
 
