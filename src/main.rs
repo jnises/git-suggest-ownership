@@ -13,8 +13,7 @@ use std::{
 };
 use thread_local::ThreadLocal;
 
-/// List the files that currently have lines that were changed by you.
-/// Sorted by percentage of lines you changed for each file.
+/// List the files and directories that currently have lines that were changed by you.
 #[derive(Debug, Parser)]
 #[command(version, about, long_about = None)]
 struct Opt {
@@ -39,9 +38,9 @@ struct Opt {
     email: Vec<String>,
 
     // TODO add option to limit the depth of tree printed
-    /// Show percentage changed per directory
+    /// Show percentage changed per file
     #[arg(long)]
-    tree: bool,
+    flat: bool,
 
     /// Show the top authors of each file or directory
     #[arg(long, conflicts_with_all = &["email", "all", "reverse"])]
@@ -50,7 +49,7 @@ struct Opt {
     #[arg(long, default_value_t = 3, conflicts_with_all = &["email", "all", "reverse"], requires = "show_authors")]
     max_authors: u32,
 
-    /// Limit to the specified directory. Defaults to the entire repo
+    /// Limit to the specified directory. Defaults to the entire repo.
     #[arg(long)]
     dir: Option<PathBuf>,
 }
@@ -394,18 +393,18 @@ fn main() -> Result<()> {
         .collect();
     progress.finish_and_clear();
     trace!("done blaming");
-    if opt.tree {
-        if opt.show_authors {
-            print_tree_authors(&files, opt.max_authors as usize);
-        } else {
-            print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
-        }
-    } else {
-        #[allow(clippy::collapsible_else_if)]
+    if opt.flat {
         if opt.show_authors {
             print_file_authors(&files, opt.max_authors as usize);
         } else {
             print_files_sorted_percentage(&files, &emails, opt.reverse, opt.all);
+        }
+    } else {
+        #[allow(clippy::collapsible_else_if)]
+        if opt.show_authors {
+            print_tree_authors(&files, opt.max_authors as usize);
+        } else {
+            print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
         }
     }
 
