@@ -18,7 +18,7 @@ use thread_local::ThreadLocal;
 #[command(version, about, long_about = None)]
 struct Opt {
     /// Start with the files with the smallest percentage
-    #[arg(short, long, conflicts_with_all = &["show_authors", "max_authors"])]
+    #[arg(long, conflicts_with_all = &["show_authors", "max_authors"])]
     reverse: bool,
 
     /// Verbose mode (-v, -vv, -vvv, etc), disables progress bar
@@ -30,7 +30,7 @@ struct Opt {
     no_progress: bool,
 
     /// Include all files, even the ones with no lines changed by you
-    #[arg(short, long, conflicts_with_all = &["show_authors", "max_authors"])]
+    #[arg(long, conflicts_with_all = &["show_authors", "max_authors"])]
     all: bool,
 
     /// Your email address. You can specify multiple. Defaults to your configured `config.email`
@@ -49,7 +49,7 @@ struct Opt {
     max_authors: u32,
 
     /// Limit to the specified directory. Defaults to the entire repo.
-    #[arg(long)]
+    #[arg(short, long)]
     dir: Option<PathBuf>,
     // TODO add option to limit the depth of tree printed
 }
