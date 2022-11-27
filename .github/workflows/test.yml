@@ -42,6 +42,6 @@ jobs:
       run: |
         cargo run -r -- --help
         cargo run -r -- --email example@example.com
-        cargo run -r -- --show-authors --email example@example.com
+        cargo run -r -- --show-authors
         cargo run -r -- --flat --email example@example.com
         cargo run -r -- --max-age 3M --email example@example.com
