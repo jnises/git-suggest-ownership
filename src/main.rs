@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
 use clap::{command, Parser};
 use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -55,6 +56,10 @@ struct Opt {
     /// Email of users to ignore. You can specify multiple. Useful if someone has stopped working on the project.
     #[arg(long)]
     ignore_user: Vec<String>,
+
+    /// Don't count commits older than this. Example: 6M
+    #[arg(long)]
+    max_age: Option<humantime::Duration>,
     // TODO add option to limit the depth of tree printed
 }
 
@@ -66,11 +71,35 @@ struct Contributions {
 
 impl Contributions {
     // TODO max commit age arg?
-    fn try_from_path(repo: &Repository, path: &Path) -> Result<Self> {
+    fn try_from_path(
+        repo: &Repository,
+        path: &Path,
+        max_age: &Option<chrono::Duration>,
+    ) -> Result<Self> {
         let blame = repo.blame_file(path, Some(BlameOptions::new().use_mailmap(true)))?;
         Ok(blame.iter().fold(Self::default(), |mut acc, hunk| {
             let lines = hunk.lines_in_hunk();
-            if let Some(email) = hunk.final_signature().email() {
+            let signature = hunk.final_signature();
+            let when = signature.when();
+            let commit_time = DateTime::<FixedOffset>::from_local(
+                NaiveDateTime::from_timestamp_opt(when.seconds(), 0).expect("valid timestamp"),
+                FixedOffset::east_opt(when.offset_minutes() * 60).unwrap_or_else(|| {
+                    // TODO handle error better?
+                    warn!(
+                        "Invalid timezone offset: {}. Defaulting to 0.",
+                        when.offset_minutes()
+                    );
+                    FixedOffset::east_opt(0).unwrap()
+                }),
+            )
+            .with_timezone(&Utc);
+            let age = Utc::now() - commit_time;
+            if let Some(max_age) = max_age {
+                if age > *max_age {
+                    return acc;
+                }
+            }
+            if let Some(email) = signature.email() {
                 acc.total_lines += lines;
                 *acc.authors.entry(email.to_owned()).or_default() += lines;
             } else {
@@ -337,6 +366,12 @@ fn main() -> Result<()> {
             .ok_or_else(|| anyhow!("bad email configured"))?
             .to_string()]
     };
+    let max_age = opt
+        .max_age
+        .map(|d| {
+            info!("max age: {d}");
+            chrono::Duration::from_std(d.into()).expect("bad duration")
+        });
     info!("Looking for lines made by email(s) {emails:?}");
     let head = repo.head()?.peel_to_tree()?;
     let progress = if opt.no_progress || opt.verbose > 0 {
@@ -388,7 +423,7 @@ fn main() -> Result<()> {
         .filter_map(|path| {
             debug!("blaming {}", path.display());
             let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
-            let contributions = Contributions::try_from_path(repo, path);
+            let contributions = Contributions::try_from_path(repo, path, &max_age);
             progress.inc(1);
             let contributions = match contributions {
                 Ok(c) => c,
