@@ -51,10 +51,11 @@ struct Opt {
     /// Limit to the specified directory. Defaults to the entire repo.
     #[arg(short, long)]
     dir: Option<PathBuf>,
-    // TODO add option to limit the depth of tree printed
+
     /// Email of users to ignore. You can specify multiple. Useful if someone has stopped working on the project.
     #[arg(long)]
     ignore_user: Vec<String>,
+    // TODO add option to limit the depth of tree printed
 }
 
 #[derive(Default)]
@@ -65,10 +66,7 @@ struct Contributions {
 
 impl Contributions {
     // TODO max commit age arg?
-    fn try_from_path(
-        repo: &Repository,
-        path: &Path,
-    ) -> Result<Self> {
+    fn try_from_path(repo: &Repository, path: &Path) -> Result<Self> {
         let blame = repo.blame_file(path, Some(BlameOptions::new().use_mailmap(true)))?;
         Ok(blame.iter().fold(Self::default(), |mut acc, hunk| {
             let lines = hunk.lines_in_hunk();
@@ -411,9 +409,10 @@ fn main() -> Result<()> {
         .collect();
     progress.finish_and_clear();
     trace!("done blaming");
-    files.iter_mut().for_each(|f| {
-        f.contributions.filter_ignored(&opt.ignore_user)
-    });
+    files
+        .iter_mut()
+        .for_each(|f| f.contributions.filter_ignored(&opt.ignore_user));
+    files.retain(|f| f.contributions.total_lines > 0);
     if opt.flat {
         if opt.show_authors {
             print_file_authors(&files, opt.max_authors as usize);
