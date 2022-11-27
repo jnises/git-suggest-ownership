@@ -368,20 +368,25 @@ fn main() -> Result<()> {
     let repo = get_repo()?;
     let repo_root = repo.workdir().unwrap_or_else(|| repo.path());
     info!("repo: {}", repo_root.display());
-    let emails = if !opt.email.is_empty() {
-        opt.email.clone()
+    let emails = if opt.show_authors {
+        None
+    } else if !opt.email.is_empty() {
+        Some(opt.email.clone())
     } else {
-        vec![repo
+        Some(vec![repo
             .signature()?
             .email()
             .ok_or_else(|| anyhow!("bad email configured"))?
-            .to_string()]
+            .to_string()])
     };
+    if let Some(emails) = &emails {
+        info!("Looking for lines made by email(s) {emails:?}");
+    }
     let max_age = opt.max_age.map(|d| {
         info!("max age: {d}");
         chrono::Duration::from_std(d.into()).expect("bad duration")
     });
-    info!("Looking for lines made by email(s) {emails:?}");
+
     let head = repo.head()?.peel_to_tree()?;
     let progress = if opt.no_progress || opt.verbose > 0 {
         ProgressBar::hidden()
@@ -461,14 +466,20 @@ fn main() -> Result<()> {
         if opt.show_authors {
             print_file_authors(&files, opt.max_authors as usize);
         } else {
-            print_files_sorted_percentage(&files, &emails, opt.reverse, opt.all);
+            print_files_sorted_percentage(&files, &emails.unwrap(), opt.reverse, opt.all);
         }
     } else {
         #[allow(clippy::collapsible_else_if)]
         if opt.show_authors {
             print_tree_authors(&files, opt.max_authors as usize, &opt.max_depth);
         } else {
-            print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all, &opt.max_depth);
+            print_tree_sorted_percentage(
+                &files,
+                &emails.unwrap(),
+                opt.reverse,
+                opt.all,
+                &opt.max_depth,
+            );
         }
     }
 
