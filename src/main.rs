@@ -52,6 +52,9 @@ struct Opt {
     #[arg(short, long)]
     dir: Option<PathBuf>,
     // TODO add option to limit the depth of tree printed
+    /// Email of users to ignore. You can specify multiple. Useful if someone has stopped working on the project.
+    #[arg(long)]
+    ignore_user: Vec<String>,
 }
 
 #[derive(Default)]
@@ -62,19 +65,34 @@ struct Contributions {
 
 impl Contributions {
     // TODO max commit age arg?
-    fn try_from_path(repo: &Repository, path: &Path) -> Result<Self> {
+    fn try_from_path(
+        repo: &Repository,
+        path: &Path,
+    ) -> Result<Self> {
         let blame = repo.blame_file(path, Some(BlameOptions::new().use_mailmap(true)))?;
         Ok(blame.iter().fold(Self::default(), |mut acc, hunk| {
             let lines = hunk.lines_in_hunk();
-            acc.total_lines += lines;
             if let Some(email) = hunk.final_signature().email() {
-                *acc.authors.entry(email.into()).or_default() += lines;
+                acc.total_lines += lines;
+                *acc.authors.entry(email.to_owned()).or_default() += lines;
             } else {
                 // TODO keep track of unauthored hunks somehow?
                 warn!("hunk without email found in {}", path.display());
             }
             acc
         }))
+    }
+
+    // TODO `ignored_users` will probably not get large enough to warrant a HashSet?
+    fn filter_ignored(&mut self, ignored_users: &[impl AsRef<str>]) {
+        self.authors.retain(|k, v| {
+            if ignored_users.iter().any(|ignored| k == ignored.as_ref()) {
+                self.total_lines -= *v;
+                false
+            } else {
+                true
+            }
+        });
     }
 
     fn lines_by_user<S: AsRef<str>>(&self, author: &[S]) -> usize {
@@ -367,7 +385,7 @@ fn main() -> Result<()> {
     progress.set_length(paths.len() as u64);
     let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
     // TODO limit max number of threads? the user can set it using RAYON_NUM_THREADS by default
-    let files: Vec<_> = paths
+    let mut files: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
             debug!("blaming {}", path.display());
@@ -393,6 +411,9 @@ fn main() -> Result<()> {
         .collect();
     progress.finish_and_clear();
     trace!("done blaming");
+    files.iter_mut().for_each(|f| {
+        f.contributions.filter_ignored(&opt.ignore_user)
+    });
     if opt.flat {
         if opt.show_authors {
             print_file_authors(&files, opt.max_authors as usize);
