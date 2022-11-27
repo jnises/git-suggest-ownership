@@ -32,9 +32,16 @@ jobs:
         components: clippy, rustfmt
     - name: Build
       run: cargo build --verbose
-    - name: Run tests
-      run: cargo test --verbose
-    - name: fmt
-      run: cargo fmt --all -- --check
     - name: clippy
       run: cargo clippy -- -D warnings
+    - name: fmt
+      run: cargo fmt --all -- --check
+    - name: Run tests
+      run: cargo test --verbose
+    - name: Run application
+      run: |
+        cargo run -r -- --help
+        cargo run -r -- --email example@example.com
+        cargo run -r -- --show-authors
+        cargo run -r -- --flat --email example@example.com
+        cargo run -r -- --max-age 3M --email example@example.com

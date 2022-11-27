@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
 use clap::{command, Parser};
 use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -51,7 +52,18 @@ struct Opt {
     /// Limit to the specified directory. Defaults to the entire repo.
     #[arg(short, long)]
     dir: Option<PathBuf>,
-    // TODO add option to limit the depth of tree printed
+
+    /// Email of users to ignore. You can specify multiple. Useful if someone has stopped working on the project.
+    #[arg(long)]
+    ignore_user: Vec<String>,
+
+    /// Don't count commits older than this. Example: 6M
+    #[arg(long)]
+    max_age: Option<humantime::Duration>,
+
+    /// Don't go deeper than this into trees when printing.
+    #[arg(long, conflicts_with_all = &["flat"])]
+    max_depth: Option<u32>,
 }
 
 #[derive(Default)]
@@ -61,20 +73,57 @@ struct Contributions {
 }
 
 impl Contributions {
-    // TODO max commit age arg?
-    fn try_from_path(repo: &Repository, path: &Path) -> Result<Self> {
+    fn try_from_path(
+        repo: &Repository,
+        path: &Path,
+        max_age: &Option<chrono::Duration>,
+    ) -> Result<Self> {
         let blame = repo.blame_file(path, Some(BlameOptions::new().use_mailmap(true)))?;
-        Ok(blame.iter().fold(Self::default(), |mut acc, hunk| {
+        let mut s = Self::default();
+        for hunk in blame.iter() {
             let lines = hunk.lines_in_hunk();
-            acc.total_lines += lines;
-            if let Some(email) = hunk.final_signature().email() {
-                *acc.authors.entry(email.into()).or_default() += lines;
+            let signature = hunk.final_signature();
+            let when = signature.when();
+            let commit_time = DateTime::<FixedOffset>::from_local(
+                NaiveDateTime::from_timestamp_opt(when.seconds(), 0)
+                    .ok_or_else(|| anyhow!("Unable to convert commit time"))?,
+                FixedOffset::east_opt(when.offset_minutes() * 60).unwrap_or_else(|| {
+                    // TODO handle error better?
+                    warn!(
+                        "Invalid timezone offset: {}. Defaulting to 0.",
+                        when.offset_minutes()
+                    );
+                    FixedOffset::east_opt(0).unwrap()
+                }),
+            )
+            .with_timezone(&Utc);
+            let age = Utc::now() - commit_time;
+            if let Some(max_age) = max_age {
+                if age > *max_age {
+                    continue;
+                }
+            }
+            if let Some(email) = signature.email() {
+                s.total_lines += lines;
+                *s.authors.entry(email.to_owned()).or_default() += lines;
             } else {
                 // TODO keep track of unauthored hunks somehow?
                 warn!("hunk without email found in {}", path.display());
             }
-            acc
-        }))
+        }
+        Ok(s)
+    }
+
+    // TODO `ignored_users` will probably not get large enough to warrant a HashSet?
+    fn filter_ignored(&mut self, ignored_users: &[impl AsRef<str>]) {
+        self.authors.retain(|k, v| {
+            if ignored_users.iter().any(|ignored| k == ignored.as_ref()) {
+                self.total_lines -= *v;
+                false
+            } else {
+                true
+            }
+        });
     }
 
     fn lines_by_user<S: AsRef<str>>(&self, author: &[S]) -> usize {
@@ -156,6 +205,7 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
     author: &[S],
     reverse: bool,
     all: bool,
+    max_depth: &Option<u32>,
 ) {
     #[derive(Default)]
     struct Node<'a> {
@@ -195,12 +245,15 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
         }
     }
 
-    fn print_node(node: &Node, reverse: bool, all: bool, prefix: &str) {
+    fn print_node(node: &Node, reverse: bool, all: bool, prefix: &str, ddl: u32) {
         println!(
             "{} - {:.1}%",
             node.name.to_string_lossy(),
             node.ratio_changed() * 100.0
         );
+        if ddl == 0 {
+            return;
+        }
         let sorted_children = {
             let mut children: Vec<_> = node
                 .children
@@ -224,17 +277,17 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
             print!("{prefix}");
             if it.peek().is_none() {
                 print!("└── ");
-                print_node(child, reverse, all, &format!("{prefix}    "));
+                print_node(child, reverse, all, &format!("{prefix}    "), ddl - 1);
             } else {
                 print!("├── ");
-                print_node(child, reverse, all, &format!("{prefix}│   "));
+                print_node(child, reverse, all, &format!("{prefix}│   "), ddl - 1);
             }
         }
     }
-    print_node(&root, reverse, all, "");
+    print_node(&root, reverse, all, "", max_depth.unwrap_or(u32::MAX));
 }
 
-fn print_tree_authors(files: &[File], num_authors: usize) {
+fn print_tree_authors(files: &[File], num_authors: usize, max_depth: &Option<u32>) {
     #[derive(Default)]
     struct Node<'a> {
         // TODO is this needed?
@@ -276,25 +329,28 @@ fn print_tree_authors(files: &[File], num_authors: usize) {
         }
     }
 
-    fn print_node<'a>(node: &Node<'a>, prefix: &str, num_authors: usize) {
+    fn print_node<'a>(node: &Node<'a>, prefix: &str, num_authors: usize, ddl: u32) {
         println!(
             "{} - {}",
             node.name.to_string_lossy(),
             node.contributions.authors_str(num_authors)
         );
+        if ddl == 0 {
+            return;
+        }
         let mut it = node.children.iter().peekable();
         while let Some((_, child)) = it.next() {
             print!("{prefix}");
             if it.peek().is_none() {
                 print!("└── ");
-                print_node(child, &format!("{prefix}    "), num_authors);
+                print_node(child, &format!("{prefix}    "), num_authors, ddl - 1);
             } else {
                 print!("├── ");
-                print_node(child, &format!("{prefix}│   "), num_authors);
+                print_node(child, &format!("{prefix}│   "), num_authors, ddl - 1);
             }
         }
     }
-    print_node(&root, "", num_authors);
+    print_node(&root, "", num_authors, max_depth.unwrap_or(u32::MAX));
 }
 
 fn main() -> Result<()> {
@@ -312,16 +368,25 @@ fn main() -> Result<()> {
     let repo = get_repo()?;
     let repo_root = repo.workdir().unwrap_or_else(|| repo.path());
     info!("repo: {}", repo_root.display());
-    let emails = if !opt.email.is_empty() {
-        opt.email.clone()
+    let emails = if opt.show_authors {
+        None
+    } else if !opt.email.is_empty() {
+        Some(opt.email.clone())
     } else {
-        vec![repo
+        Some(vec![repo
             .signature()?
             .email()
             .ok_or_else(|| anyhow!("bad email configured"))?
-            .to_string()]
+            .to_string()])
     };
-    info!("Looking for lines made by email(s) {emails:?}");
+    if let Some(emails) = &emails {
+        info!("Looking for lines made by email(s) {emails:?}");
+    }
+    let max_age = opt.max_age.map(|d| {
+        info!("max age: {d}");
+        chrono::Duration::from_std(d.into()).expect("bad duration")
+    });
+
     let head = repo.head()?.peel_to_tree()?;
     let progress = if opt.no_progress || opt.verbose > 0 {
         ProgressBar::hidden()
@@ -367,12 +432,12 @@ fn main() -> Result<()> {
     progress.set_length(paths.len() as u64);
     let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
     // TODO limit max number of threads? the user can set it using RAYON_NUM_THREADS by default
-    let files: Vec<_> = paths
+    let mut files: Vec<_> = paths
         .par_iter()
         .filter_map(|path| {
             debug!("blaming {}", path.display());
             let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
-            let contributions = Contributions::try_from_path(repo, path);
+            let contributions = Contributions::try_from_path(repo, path, &max_age);
             progress.inc(1);
             let contributions = match contributions {
                 Ok(c) => c,
@@ -393,18 +458,28 @@ fn main() -> Result<()> {
         .collect();
     progress.finish_and_clear();
     trace!("done blaming");
+    files
+        .iter_mut()
+        .for_each(|f| f.contributions.filter_ignored(&opt.ignore_user));
+    files.retain(|f| f.contributions.total_lines > 0);
     if opt.flat {
         if opt.show_authors {
             print_file_authors(&files, opt.max_authors as usize);
         } else {
-            print_files_sorted_percentage(&files, &emails, opt.reverse, opt.all);
+            print_files_sorted_percentage(&files, &emails.unwrap(), opt.reverse, opt.all);
         }
     } else {
         #[allow(clippy::collapsible_else_if)]
         if opt.show_authors {
-            print_tree_authors(&files, opt.max_authors as usize);
+            print_tree_authors(&files, opt.max_authors as usize, &opt.max_depth);
         } else {
-            print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
+            print_tree_sorted_percentage(
+                &files,
+                &emails.unwrap(),
+                opt.reverse,
+                opt.all,
+                &opt.max_depth,
+            );
         }
     }
 
