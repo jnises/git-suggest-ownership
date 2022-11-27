@@ -205,7 +205,7 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
     author: &[S],
     reverse: bool,
     all: bool,
-    max_depth: &Option<u32>
+    max_depth: &Option<u32>,
 ) {
     #[derive(Default)]
     struct Node<'a> {
