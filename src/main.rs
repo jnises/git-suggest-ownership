@@ -60,7 +60,10 @@ struct Opt {
     /// Don't count commits older than this. Example: 6M
     #[arg(long)]
     max_age: Option<humantime::Duration>,
-    // TODO add option to limit the depth of tree printed
+
+    /// Don't go deeper than this into trees when printing.
+    #[arg(long, conflicts_with_all = &["flat"])]
+    max_depth: Option<u32>,
 }
 
 #[derive(Default)]
@@ -202,6 +205,7 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
     author: &[S],
     reverse: bool,
     all: bool,
+    max_depth: &Option<u32>
 ) {
     #[derive(Default)]
     struct Node<'a> {
@@ -241,12 +245,15 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
         }
     }
 
-    fn print_node(node: &Node, reverse: bool, all: bool, prefix: &str) {
+    fn print_node(node: &Node, reverse: bool, all: bool, prefix: &str, ddl: u32) {
         println!(
             "{} - {:.1}%",
             node.name.to_string_lossy(),
             node.ratio_changed() * 100.0
         );
+        if ddl == 0 {
+            return;
+        }
         let sorted_children = {
             let mut children: Vec<_> = node
                 .children
@@ -270,17 +277,17 @@ fn print_tree_sorted_percentage<S: AsRef<str>>(
             print!("{prefix}");
             if it.peek().is_none() {
                 print!("└── ");
-                print_node(child, reverse, all, &format!("{prefix}    "));
+                print_node(child, reverse, all, &format!("{prefix}    "), ddl - 1);
             } else {
                 print!("├── ");
-                print_node(child, reverse, all, &format!("{prefix}│   "));
+                print_node(child, reverse, all, &format!("{prefix}│   "), ddl - 1);
             }
         }
     }
-    print_node(&root, reverse, all, "");
+    print_node(&root, reverse, all, "", max_depth.unwrap_or(u32::MAX));
 }
 
-fn print_tree_authors(files: &[File], num_authors: usize) {
+fn print_tree_authors(files: &[File], num_authors: usize, max_depth: &Option<u32>) {
     #[derive(Default)]
     struct Node<'a> {
         // TODO is this needed?
@@ -322,25 +329,28 @@ fn print_tree_authors(files: &[File], num_authors: usize) {
         }
     }
 
-    fn print_node<'a>(node: &Node<'a>, prefix: &str, num_authors: usize) {
+    fn print_node<'a>(node: &Node<'a>, prefix: &str, num_authors: usize, ddl: u32) {
         println!(
             "{} - {}",
             node.name.to_string_lossy(),
             node.contributions.authors_str(num_authors)
         );
+        if ddl == 0 {
+            return;
+        }
         let mut it = node.children.iter().peekable();
         while let Some((_, child)) = it.next() {
             print!("{prefix}");
             if it.peek().is_none() {
                 print!("└── ");
-                print_node(child, &format!("{prefix}    "), num_authors);
+                print_node(child, &format!("{prefix}    "), num_authors, ddl - 1);
             } else {
                 print!("├── ");
-                print_node(child, &format!("{prefix}│   "), num_authors);
+                print_node(child, &format!("{prefix}│   "), num_authors, ddl - 1);
             }
         }
     }
-    print_node(&root, "", num_authors);
+    print_node(&root, "", num_authors, max_depth.unwrap_or(u32::MAX));
 }
 
 fn main() -> Result<()> {
@@ -456,9 +466,9 @@ fn main() -> Result<()> {
     } else {
         #[allow(clippy::collapsible_else_if)]
         if opt.show_authors {
-            print_tree_authors(&files, opt.max_authors as usize);
+            print_tree_authors(&files, opt.max_authors as usize, &opt.max_depth);
         } else {
-            print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all);
+            print_tree_sorted_percentage(&files, &emails, opt.reverse, opt.all, &opt.max_depth);
         }
     }
 
