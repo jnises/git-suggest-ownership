@@ -48,6 +48,7 @@ impl Contributions {
         repo: &Repository,
         paths: &HashSet<PathBuf>,
         max_age: &Option<chrono::Duration>,
+        progress: impl Fn(usize, usize),
     ) -> Result<HashMap<PathBuf, Self>> {
         fn calculate(
             repo: &Repository,
@@ -56,6 +57,7 @@ impl Contributions {
             root: &Commit,
             contributions: &mut HashMap<PathBuf, Contributions>,
             mut renames: HashMap<PathBuf, PathBuf>,
+            progress: &mut dyn FnMut(),
         ) -> Result<()> {
             log::debug!("calculating contributions for commit {}", root.id());
             let root_time = time_to_utc_datetime(root.time())?;
@@ -65,6 +67,7 @@ impl Contributions {
                     return Ok(());
                 }
             }
+            progress();
             for parent in root.parents() {
                 // TODO mailmap
                 if let Some(author) = root.author().email() {
@@ -97,7 +100,7 @@ impl Contributions {
                             }
                             // TODO make sure these paths match
                             if paths.contains(&mapped_new) {
-                                // TODO is this a sensible way to calculate it?
+                                // TODO is this a sensible way to calculate it? better to count lines added, removed, and changed properly?
                                 let lines_changed = hunk.old_lines().max(hunk.new_lines());
                                 contributions
                                     .entry(mapped_new)
@@ -118,12 +121,24 @@ impl Contributions {
                     &parent,
                     contributions,
                     renames.clone(),
+                    progress,
                 )?;
             }
             Ok(())
         }
         let head = repo.head()?.peel_to_commit()?;
+        fn count_commits(repo: &Repository, root: &Commit) -> Result<usize> {
+            let mut commits = 1;
+            for parent in root.parents() {
+                commits += count_commits(repo, &parent)?;
+            }
+            Ok(commits)
+        }
+        log::debug!("counting commits");
+        let num_commits = count_commits(repo, &head)?;
+        let mut commits_completed = 0;
         let mut contributions = HashMap::new();
+        log::debug!("calculating contributions");
         calculate(
             repo,
             paths,
@@ -131,6 +146,7 @@ impl Contributions {
             &head,
             &mut contributions,
             HashMap::new(),
+            &mut || { commits_completed += 1; progress(commits_completed, num_commits)},
         )?;
         Ok(contributions)
     }

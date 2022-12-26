@@ -69,7 +69,7 @@ struct Opt {
 
     /// Include lines that were later overwritten in the count.
     #[arg(long)]
-    overwritten: bool,
+    overwritten_lines: bool,
     // TODO add option to ignore files/directories
 }
 
@@ -342,9 +342,12 @@ fn main() -> Result<()> {
         info!("blaming all paths");
     }
     progress.set_style(ProgressStyle::default_bar());
-    let mut files: Vec<_> = if opt.overwritten {
+    let mut files: Vec<_> = if opt.overwritten_lines {
         let paths_set = paths.iter().cloned().collect::<HashSet<_>>();
-        Contributions::calculate_with_overwritten_lines_from_paths(&repo, &paths_set, &max_age)?
+        Contributions::calculate_with_overwritten_lines_from_paths(&repo, &paths_set, &max_age, |completed, total| {
+            progress.set_length(total as u64);
+            progress.set_position(completed as u64);
+        })?
             .into_iter()
             .map(|(path, contributions)| File {
                 path,
