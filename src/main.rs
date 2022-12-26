@@ -9,9 +9,9 @@ use log::{debug, error, info, trace, warn};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::{
     cmp::Ordering,
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     ffi::OsStr,
-    path::{Path, PathBuf},
+    path::PathBuf,
     str::FromStr,
 };
 use thread_local::ThreadLocal;
@@ -67,11 +67,14 @@ struct Opt {
     #[arg(long, conflicts_with_all = &["flat"])]
     max_depth: Option<u32>,
 
+    /// Include lines that were later overwritten in the count.
+    #[arg(long)]
+    overwritten: bool,
     // TODO add option to ignore files/directories
 }
 
-struct File<'a> {
-    path: &'a Path,
+struct File {
+    path: PathBuf,
     contributions: Contributions,
 }
 
@@ -83,7 +86,7 @@ fn print_files_sorted_percentage<S: AsRef<str>>(
 ) {
     let mut contributions_by_author = files
         .iter()
-        .map(|f| (f.path, f.contributions.ratio_changed_by_user(author)))
+        .map(|f| (&f.path, f.contributions.ratio_changed_by_user(author)))
         .collect::<Vec<_>>();
     contributions_by_author.sort_by(|(_, a), (_, b)| {
         let x = b.partial_cmp(a).unwrap_or(Ordering::Equal);
@@ -339,33 +342,44 @@ fn main() -> Result<()> {
         info!("blaming all paths");
     }
     progress.set_style(ProgressStyle::default_bar());
-    progress.set_length(paths.len() as u64);
-    let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
-    // TODO limit max number of threads? the user can set it using RAYON_NUM_THREADS by default
-    let mut files: Vec<_> = paths
-        .par_iter()
-        .filter_map(|path| {
-            debug!("blaming {}", path.display());
-            let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
-            let contributions = Contributions::try_from_path(repo, path, &max_age);
-            progress.inc(1);
-            let contributions = match contributions {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!("Error blaming file {} ({e})", path.display());
-                    return None;
+    let mut files: Vec<_> = if opt.overwritten {
+        let paths_set = paths.iter().cloned().collect::<HashSet<_>>();
+        Contributions::calculate_with_overwritten_lines_from_paths(&repo, &paths_set, &max_age)?
+            .into_iter()
+            .map(|(path, contributions)| File {
+                path,
+                contributions,
+            })
+            .collect()
+    } else {
+        progress.set_length(paths.len() as u64);
+        let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
+        // TODO limit max number of threads? the user can set it using RAYON_NUM_THREADS by default
+        paths
+            .par_iter()
+            .filter_map(|path| {
+                debug!("blaming {}", path.display());
+                let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
+                let contributions = Contributions::try_from_path(repo, path, &max_age);
+                progress.inc(1);
+                let contributions = match contributions {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("Error blaming file {} ({e})", path.display());
+                        return None;
+                    }
+                };
+                if contributions.total_lines > 0 {
+                    Some(File {
+                        path: path.clone(),
+                        contributions,
+                    })
+                } else {
+                    None
                 }
-            };
-            if contributions.total_lines > 0 {
-                Some(File {
-                    path,
-                    contributions,
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
+            })
+            .collect()
+    };
     progress.finish_and_clear();
     trace!("done blaming");
     files

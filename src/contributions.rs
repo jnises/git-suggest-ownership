@@ -9,7 +9,7 @@ use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
 use git2::{BlameOptions, Commit, DiffOptions, Repository};
 use log::warn;
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct Contributions {
     pub(crate) authors: BTreeMap<String, usize>,
     pub(crate) total_lines: usize,
@@ -35,8 +35,7 @@ impl Contributions {
                 }
             }
             if let Some(email) = signature.email() {
-                s.total_lines += lines;
-                *s.authors.entry(email.to_owned()).or_default() += lines;
+                s.add_lines(email.to_owned(), lines);
             } else {
                 // TODO keep track of unauthored hunks somehow?
                 warn!("hunk without email found in {}", path.display());
@@ -45,7 +44,7 @@ impl Contributions {
         Ok(s)
     }
 
-    pub(crate) fn calculate_overwritten_from_paths(
+    pub(crate) fn calculate_with_overwritten_lines_from_paths(
         repo: &Repository,
         paths: &HashSet<PathBuf>,
         max_age: &Option<chrono::Duration>,
@@ -58,6 +57,7 @@ impl Contributions {
             contributions: &mut HashMap<PathBuf, Contributions>,
             mut renames: HashMap<PathBuf, PathBuf>,
         ) -> Result<()> {
+            log::debug!("calculating contributions for commit {}", root.id());
             let root_time = time_to_utc_datetime(root.time())?;
             let age = Utc::now() - root_time;
             if let Some(max_age) = max_age {
@@ -99,12 +99,10 @@ impl Contributions {
                             if paths.contains(&mapped_new) {
                                 // TODO is this a sensible way to calculate it?
                                 let lines_changed = hunk.old_lines().max(hunk.new_lines());
-                                *contributions
+                                contributions
                                     .entry(mapped_new)
                                     .or_default()
-                                    .authors
-                                    .entry(author.to_string())
-                                    .or_default() += lines_changed as usize;
+                                    .add_lines(author.to_string(), lines_changed as usize);
                             }
                             true
                         }),
@@ -180,6 +178,11 @@ impl Contributions {
             .collect::<Vec<_>>()
             .join(", ");
         format!("({author_str})")
+    }
+
+    fn add_lines(&mut self, author: String, lines: usize) {
+        self.total_lines += lines;
+        *self.authors.entry(author.to_string()).or_default() += lines;
     }
 }
 
