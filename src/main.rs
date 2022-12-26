@@ -66,6 +66,8 @@ struct Opt {
     /// Don't go deeper than this into trees when printing.
     #[arg(long, conflicts_with_all = &["flat"])]
     max_depth: Option<u32>,
+
+    // TODO add option to ignore files/directories
 }
 
 struct File<'a> {
