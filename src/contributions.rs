@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
-use git2::{BlameOptions, Commit, DiffOptions, Repository};
+use git2::{BlameOptions, DiffOptions, Repository};
 use log::warn;
 
 #[derive(Default, Debug)]
@@ -50,30 +50,55 @@ impl Contributions {
         max_age: &Option<chrono::Duration>,
         progress: impl Fn(usize, usize),
     ) -> Result<HashMap<PathBuf, Self>> {
-        fn calculate(
-            repo: &Repository,
-            paths: &HashSet<PathBuf>,
-            max_age: &Option<chrono::Duration>,
-            root: &Commit,
-            contributions: &mut HashMap<PathBuf, Contributions>,
-            mut renames: HashMap<PathBuf, PathBuf>,
-            progress: &mut dyn FnMut(),
-        ) -> Result<()> {
-            log::debug!("calculating contributions for commit {}", root.id());
-            let root_time = time_to_utc_datetime(root.time())?;
-            let age = Utc::now() - root_time;
-            if let Some(max_age) = max_age {
-                if age > *max_age {
-                    return Ok(());
+        let mut walker = repo.revwalk()?;
+        walker.push_head()?;
+        log::debug!("counting commits");
+        let commits: Vec<_> = walker
+            .filter_map(|oid_res| {
+                match oid_res {
+                    Ok(oid) => {
+                        let c = repo.find_commit(oid).unwrap();
+                        if let Some(max_age) = max_age {
+                            let Ok(time) = time_to_utc_datetime(c.time()) else {
+                                log::warn!("Commit {} has no valid time. Ignoring.", c.id());
+                                return None;
+                            };
+                            let age = Utc::now() - time;
+                            if age > *max_age {
+                                return None;
+                            }
+                        }
+                        // we don't want to count merge commits. but perhaps we should somehow?
+                        if c.parents().count() == 1 {
+                            Some(c)
+                        } else {
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("error while walking commits: {e}");
+                        None
+                    }
                 }
-            }
-            progress();
-            for parent in root.parents() {
+            })
+            .collect();
+        let num_commits = commits.len();
+        log::debug!("calculating contributions");
+        // TODO do this in parallel
+        let (contributions, _renames) = commits
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                debug_assert!(c.parents().count() == 1);
+                let parent = c.parents().next().unwrap();
+                let mut contributions: HashMap<PathBuf, Self> = HashMap::new();
+                let mut renames = HashMap::new();
+
                 // TODO mailmap
-                if let Some(author) = root.author().email() {
+                if let Some(author) = c.author().email() {
                     let mut diff = repo.diff_tree_to_tree(
                         Some(&parent.tree()?),
-                        Some(&root.tree()?),
+                        Some(&c.tree()?),
                         // TODO use some other diff options? patience?
                         Some(DiffOptions::new().context_lines(0)),
                     )?;
@@ -86,24 +111,20 @@ impl Contributions {
                             if !delta.new_file().exists() {
                                 return true;
                             }
-                            let mut mapped_new = delta.new_file().path().unwrap().to_path_buf();
-                            if let Some(m) = renames.get(&mapped_new) {
-                                mapped_new = m.clone();
-                            }
+                            let new = delta.new_file().path().unwrap().to_path_buf();
                             if delta.old_file().exists()
                                 && delta.old_file().path() != delta.new_file().path()
                             {
                                 renames.insert(
                                     delta.old_file().path().unwrap().to_path_buf(),
-                                    mapped_new.clone(),
+                                    new.clone(),
                                 );
                             }
-                            // TODO make sure these paths match
-                            if paths.contains(&mapped_new) {
+                            if paths.contains(&new) {
                                 // TODO is this a sensible way to calculate it? better to count lines added, removed, and changed properly?
                                 let lines_changed = hunk.old_lines().max(hunk.new_lines());
                                 contributions
-                                    .entry(mapped_new)
+                                    .entry(new)
                                     .or_default()
                                     .add_lines(author.to_string(), lines_changed as usize);
                             }
@@ -112,42 +133,40 @@ impl Contributions {
                         None,
                     )?;
                 } else {
-                    log::warn!("Commit {} has no valid author email", root.id());
+                    log::warn!("Commit {} has no valid author email", c.id());
                 }
-                calculate(
-                    repo,
-                    paths,
-                    max_age,
-                    &parent,
-                    contributions,
-                    renames.clone(),
-                    progress,
-                )?;
-            }
-            Ok(())
-        }
-        let head = repo.head()?.peel_to_commit()?;
-        fn count_commits(repo: &Repository, root: &Commit) -> Result<usize> {
-            let mut commits = 1;
-            for parent in root.parents() {
-                commits += count_commits(repo, &parent)?;
-            }
-            Ok(commits)
-        }
-        log::debug!("counting commits");
-        let num_commits = count_commits(repo, &head)?;
-        let mut commits_completed = 0;
-        let mut contributions = HashMap::new();
-        log::debug!("calculating contributions");
-        calculate(
-            repo,
-            paths,
-            max_age,
-            &head,
-            &mut contributions,
-            HashMap::new(),
-            &mut || { commits_completed += 1; progress(commits_completed, num_commits)},
-        )?;
+                progress(i, num_commits);
+                Ok((contributions, renames))
+            })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .reduce(|mut acc, other| {
+                let mut mapped = HashMap::new();
+                // TODO is the rename handling done correctly?
+                for (path, contributions) in acc.0 {
+                    if let Some(new_path) = other.1.get(&path) {
+                        mapped.insert(new_path.clone(), contributions);
+                    } else {
+                        mapped.insert(path, contributions);
+                    }
+                }
+                for (path, other_contributions) in other.0 {
+                    mapped.entry(path).or_default().merge(other_contributions);
+                }
+                'outer: for (other_old_path, other_new_path) in other.1 {
+                    // TODO do this with a better data structure
+                    for acc_new in acc.1.values_mut() {
+                        if *acc_new == other_old_path {
+                            *acc_new = other_new_path;
+                            // TODO or can there be multiple renames to the same path?
+                            break 'outer;
+                        }
+                    }
+                    acc.1.insert(other_old_path, other_new_path);
+                }
+                (mapped, acc.1)
+            })
+            .unwrap_or_default();
         Ok(contributions)
     }
 
@@ -198,7 +217,14 @@ impl Contributions {
 
     fn add_lines(&mut self, author: String, lines: usize) {
         self.total_lines += lines;
-        *self.authors.entry(author.to_string()).or_default() += lines;
+        *self.authors.entry(author).or_default() += lines;
+    }
+
+    fn merge(&mut self, other: Self) {
+        self.total_lines += other.total_lines;
+        for (author, lines) in other.authors {
+            *self.authors.entry(author).or_default() += lines;
+        }
     }
 }
 
