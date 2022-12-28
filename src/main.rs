@@ -344,16 +344,21 @@ fn main() -> Result<()> {
     progress.set_style(ProgressStyle::default_bar());
     let mut files: Vec<_> = if opt.overwritten_lines {
         let paths_set = paths.iter().cloned().collect::<HashSet<_>>();
-        Contributions::calculate_with_overwritten_lines_from_paths(&repo, &paths_set, &max_age, |completed, total| {
-            progress.set_length(total as u64);
-            progress.set_position(completed as u64);
-        })?
-            .into_iter()
-            .map(|(path, contributions)| File {
-                path,
-                contributions,
-            })
-            .collect()
+        Contributions::calculate_with_overwritten_lines_from_paths(
+            &repo,
+            &paths_set,
+            &max_age,
+            |completed, total| {
+                progress.set_length(total as u64);
+                progress.set_position(completed as u64);
+            },
+        )?
+        .into_iter()
+        .map(|(path, contributions)| File {
+            path,
+            contributions,
+        })
+        .collect()
     } else {
         progress.set_length(paths.len() as u64);
         let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
