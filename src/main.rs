@@ -1,15 +1,17 @@
+mod contributions;
+use contributions::Contributions;
+
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
 use clap::{command, Parser};
-use git2::{BlameOptions, ObjectType, Repository, TreeWalkMode, TreeWalkResult};
+use git2::{ObjectType, Repository, TreeWalkMode, TreeWalkResult};
 use indicatif::{ProgressBar, ProgressStyle};
 use log::{debug, error, info, trace, warn};
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use std::{
     cmp::Ordering,
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     ffi::OsStr,
-    path::{Path, PathBuf},
+    path::PathBuf,
     str::FromStr,
 };
 use thread_local::ThreadLocal;
@@ -64,104 +66,15 @@ struct Opt {
     /// Don't go deeper than this into trees when printing.
     #[arg(long, conflicts_with_all = &["flat"])]
     max_depth: Option<u32>,
+
+    /// Include lines that were later overwritten in the count.
+    #[arg(long)]
+    overwritten_lines: bool,
+    // TODO add option to ignore files/directories
 }
 
-#[derive(Default)]
-struct Contributions {
-    authors: BTreeMap<String, usize>,
-    total_lines: usize,
-}
-
-impl Contributions {
-    fn try_from_path(
-        repo: &Repository,
-        path: &Path,
-        max_age: &Option<chrono::Duration>,
-    ) -> Result<Self> {
-        let blame = repo.blame_file(path, Some(BlameOptions::new().use_mailmap(true)))?;
-        let mut s = Self::default();
-        for hunk in blame.iter() {
-            let lines = hunk.lines_in_hunk();
-            let signature = hunk.final_signature();
-            let when = signature.when();
-            let commit_time = DateTime::<FixedOffset>::from_local(
-                NaiveDateTime::from_timestamp_opt(when.seconds(), 0)
-                    .ok_or_else(|| anyhow!("Unable to convert commit time"))?,
-                FixedOffset::east_opt(when.offset_minutes() * 60).unwrap_or_else(|| {
-                    // TODO handle error better?
-                    warn!(
-                        "Invalid timezone offset: {}. Defaulting to 0.",
-                        when.offset_minutes()
-                    );
-                    FixedOffset::east_opt(0).unwrap()
-                }),
-            )
-            .with_timezone(&Utc);
-            let age = Utc::now() - commit_time;
-            if let Some(max_age) = max_age {
-                if age > *max_age {
-                    continue;
-                }
-            }
-            if let Some(email) = signature.email() {
-                s.total_lines += lines;
-                *s.authors.entry(email.to_owned()).or_default() += lines;
-            } else {
-                // TODO keep track of unauthored hunks somehow?
-                warn!("hunk without email found in {}", path.display());
-            }
-        }
-        Ok(s)
-    }
-
-    // TODO `ignored_users` will probably not get large enough to warrant a HashSet?
-    fn filter_ignored(&mut self, ignored_users: &[impl AsRef<str>]) {
-        self.authors.retain(|k, v| {
-            if ignored_users.iter().any(|ignored| k == ignored.as_ref()) {
-                self.total_lines -= *v;
-                false
-            } else {
-                true
-            }
-        });
-    }
-
-    fn lines_by_user<S: AsRef<str>>(&self, author: &[S]) -> usize {
-        self.authors
-            .iter()
-            .filter_map(|(key, value)| {
-                author
-                    .iter()
-                    .any(|email| email.as_ref() == key)
-                    .then_some(value)
-            })
-            .sum()
-    }
-
-    fn ratio_changed_by_user<S: AsRef<str>>(&self, author: &[S]) -> f64 {
-        let lines_by_user = self.lines_by_user(author);
-        lines_by_user as f64 / self.total_lines as f64
-    }
-
-    fn authors_str(&self, num_authors: usize) -> String {
-        let mut authors = self
-            .authors
-            .iter()
-            .map(|(email, lines)| (email.clone(), *lines as f64 / self.total_lines as f64))
-            .collect::<Vec<_>>();
-        authors.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(Ordering::Equal));
-        authors.truncate(num_authors);
-        let author_str = authors
-            .into_iter()
-            .map(|(email, contribution)| format!("{email}: {:.1}%", contribution * 100.0))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("({author_str})")
-    }
-}
-
-struct File<'a> {
-    path: &'a Path,
+struct File {
+    path: PathBuf,
     contributions: Contributions,
 }
 
@@ -173,7 +86,7 @@ fn print_files_sorted_percentage<S: AsRef<str>>(
 ) {
     let mut contributions_by_author = files
         .iter()
-        .map(|f| (f.path, f.contributions.ratio_changed_by_user(author)))
+        .map(|f| (&f.path, f.contributions.ratio_changed_by_user(author)))
         .collect::<Vec<_>>();
     contributions_by_author.sort_by(|(_, a), (_, b)| {
         let x = b.partial_cmp(a).unwrap_or(Ordering::Equal);
@@ -393,8 +306,10 @@ fn main() -> Result<()> {
     } else {
         ProgressBar::new_spinner()
     };
+    progress.set_style(ProgressStyle::default_bar());
     let mut paths = vec![];
     head.walk(TreeWalkMode::PreOrder, |dir, entry| {
+        progress.tick();
         if let Some(ObjectType::Blob) = entry.kind() {
             if let Some(name) = entry.name() {
                 let path = PathBuf::from(format!("{dir}{name}"));
@@ -428,40 +343,58 @@ fn main() -> Result<()> {
     } else {
         info!("blaming all paths");
     }
-    progress.set_style(ProgressStyle::default_bar());
-    progress.set_length(paths.len() as u64);
-    let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
-    // TODO limit max number of threads? the user can set it using RAYON_NUM_THREADS by default
-    let mut files: Vec<_> = paths
-        .par_iter()
-        .filter_map(|path| {
-            debug!("blaming {}", path.display());
-            let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
-            let contributions = Contributions::try_from_path(repo, path, &max_age);
-            progress.inc(1);
-            let contributions = match contributions {
-                Ok(c) => c,
-                Err(e) => {
-                    warn!("Error blaming file {} ({e})", path.display());
-                    return None;
-                }
-            };
-            if contributions.total_lines > 0 {
-                Some(File {
-                    path,
-                    contributions,
-                })
-            } else {
-                None
-            }
+    let mut files: Vec<_> = if opt.overwritten_lines {
+        let paths_set = paths.iter().cloned().collect::<HashSet<_>>();
+        Contributions::calculate_with_overwritten_lines_from_paths(
+            &repo,
+            &paths_set,
+            &max_age,
+            |completed, total| {
+                progress.set_length(total as u64);
+                progress.set_position(completed as u64);
+            },
+        )?
+        .into_iter()
+        .map(|(path, contributions)| File {
+            path,
+            contributions,
         })
-        .collect();
-    progress.finish_and_clear();
+        .collect()
+    } else {
+        progress.set_length(paths.len() as u64);
+        let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
+        // TODO limit max number of threads? the user can set it using RAYON_NUM_THREADS by default
+        paths
+            .par_iter()
+            .filter_map(|path| {
+                debug!("blaming {}", path.display());
+                let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
+                let contributions = Contributions::try_from_path(repo, path, &max_age);
+                progress.inc(1);
+                let contributions = match contributions {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("Error blaming file {} ({e})", path.display());
+                        return None;
+                    }
+                };
+                if contributions.total_lines > 0 {
+                    Some(File {
+                        path: path.clone(),
+                        contributions,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
     trace!("done blaming");
     files
         .iter_mut()
         .for_each(|f| f.contributions.filter_ignored(&opt.ignore_user));
     files.retain(|f| f.contributions.total_lines > 0);
+    progress.finish_and_clear();
     if opt.flat {
         if opt.show_authors {
             print_file_authors(&files, opt.max_authors as usize);

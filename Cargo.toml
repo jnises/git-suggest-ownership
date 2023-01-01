@@ -13,7 +13,7 @@ anyhow = "1.0"
 clap = { version = "4.0", features = ["derive"] }
 log = "0.4"
 stderrlog = "0.5"
-indicatif = "0.17"
+indicatif = { version = "0.17", features = ["improved_unicode"] }
 rayon = "1.5"
 thread_local = "1.1"
 git2 = { version = "0.15", default-features = false }
