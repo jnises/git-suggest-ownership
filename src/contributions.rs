@@ -105,21 +105,29 @@ impl Contributions {
                     // TODO different options here?
                     diff.find_similar(None)?;
                     diff.foreach(
-                        &mut |_, _| true,
+                        &mut |delta, _diff_progress| {
+                            if delta.new_file().exists() && delta.old_file().exists()
+                                && delta.old_file().path() != delta.new_file().path()
+                            {
+                                let new = delta.new_file().path().unwrap().to_path_buf();
+                                renames.insert(
+                                    delta.old_file().path().unwrap().to_path_buf(),
+                                    new,
+                                );
+                            }                            
+                            true
+                        },
                         None,
                         Some(&mut |delta, hunk| {
-                            if !delta.new_file().exists() {
+                            if !delta.new_file().exists()
+                                || !matches!(
+                                    delta.status(),
+                                    git2::Delta::Added | git2::Delta::Modified
+                                )
+                            {
                                 return true;
                             }
                             let new = delta.new_file().path().unwrap().to_path_buf();
-                            if delta.old_file().exists()
-                                && delta.old_file().path() != delta.new_file().path()
-                            {
-                                renames.insert(
-                                    delta.old_file().path().unwrap().to_path_buf(),
-                                    new.clone(),
-                                );
-                            }
                             if paths.contains(&new) {
                                 // TODO is this a sensible way to calculate it? better to count lines added, removed, and changed properly?
                                 let lines_changed = hunk.old_lines().max(hunk.new_lines());
