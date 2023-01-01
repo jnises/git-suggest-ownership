@@ -306,8 +306,10 @@ fn main() -> Result<()> {
     } else {
         ProgressBar::new_spinner()
     };
+    progress.set_style(ProgressStyle::default_bar());
     let mut paths = vec![];
     head.walk(TreeWalkMode::PreOrder, |dir, entry| {
+        progress.tick();
         if let Some(ObjectType::Blob) = entry.kind() {
             if let Some(name) = entry.name() {
                 let path = PathBuf::from(format!("{dir}{name}"));
@@ -341,7 +343,6 @@ fn main() -> Result<()> {
     } else {
         info!("blaming all paths");
     }
-    progress.set_style(ProgressStyle::default_bar());
     let mut files: Vec<_> = if opt.overwritten_lines {
         let paths_set = paths.iter().cloned().collect::<HashSet<_>>();
         Contributions::calculate_with_overwritten_lines_from_paths(
@@ -388,12 +389,12 @@ fn main() -> Result<()> {
             })
             .collect()
     };
-    progress.finish_and_clear();
     trace!("done blaming");
     files
         .iter_mut()
         .for_each(|f| f.contributions.filter_ignored(&opt.ignore_user));
     files.retain(|f| f.contributions.total_lines > 0);
+    progress.finish_and_clear();
     if opt.flat {
         if opt.show_authors {
             print_file_authors(&files, opt.max_authors as usize);

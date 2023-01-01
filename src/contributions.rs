@@ -27,7 +27,7 @@ impl Contributions {
             let lines = hunk.lines_in_hunk();
             let signature = hunk.final_signature();
             let when = signature.when();
-            let commit_time = time_to_utc_datetime(when)?;
+            let commit_time = git_time_to_utc_datetime(when)?;
             let age = Utc::now() - commit_time;
             if let Some(max_age) = max_age {
                 if age > *max_age {
@@ -59,7 +59,7 @@ impl Contributions {
                     Ok(oid) => {
                         let c = repo.find_commit(oid).unwrap();
                         if let Some(max_age) = max_age {
-                            let Ok(time) = time_to_utc_datetime(c.time()) else {
+                            let Ok(time) = git_time_to_utc_datetime(c.time()) else {
                                 log::warn!("Commit {} has no valid time. Ignoring.", c.id());
                                 return None;
                             };
@@ -228,7 +228,7 @@ impl Contributions {
     }
 }
 
-fn time_to_utc_datetime(time: git2::Time) -> Result<DateTime<Utc>> {
+fn git_time_to_utc_datetime(time: git2::Time) -> Result<DateTime<Utc>> {
     Ok(DateTime::<FixedOffset>::from_local(
         NaiveDateTime::from_timestamp_opt(time.seconds(), 0)
             .ok_or_else(|| anyhow!("Unable to convert commit time"))?,
