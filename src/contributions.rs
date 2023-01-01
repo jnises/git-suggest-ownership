@@ -88,7 +88,7 @@ impl Contributions {
         let num_commits = commits.len();
         log::debug!("calculating contributions");
         let root = repo.workdir().unwrap_or_else(|| repo.path());
-        let get_repo = || -> Result<_> { Ok(Repository::discover(&root)?) };
+        let get_repo = || -> Result<_> { Ok(Repository::discover(root)?) };
         let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
         let (contributions, _renames) = commits
             .par_iter()
