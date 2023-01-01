@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
-use git2::{BlameOptions, DiffOptions, Repository};
+use git2::{BlameOptions, DiffFindOptions, DiffOptions, Repository};
 use log::warn;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use thread_local::ThreadLocal;
@@ -99,6 +99,7 @@ impl Contributions {
                 debug_assert!(c.parents().count() == 1);
                 let parent = c.parents().next().unwrap();
                 let mut contributions: HashMap<PathBuf, Self> = HashMap::new();
+                // TODO rename handling is broken. what happens if a file is renamed and then the original file is recreated later?
                 let mut renames = HashMap::new();
 
                 let signature = c.author_with_mailmap(&mailmap)?;
@@ -109,8 +110,8 @@ impl Contributions {
                         // TODO use some other diff options? patience?
                         Some(DiffOptions::new().context_lines(0)),
                     )?;
-                    // TODO different options here?
-                    diff.find_similar(None)?;
+                    // TODO we get more sensible numbers if we don't use find_similar, but then we don't get renames
+                    diff.find_similar(None);
                     diff.foreach(
                         &mut |delta, _diff_progress| {
                             if delta.new_file().exists()
