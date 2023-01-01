@@ -1,13 +1,15 @@
 use std::{
-    cmp::Ordering,
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::atomic::AtomicUsize,
 };
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
 use git2::{BlameOptions, DiffOptions, Repository};
 use log::warn;
+use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
+use thread_local::ThreadLocal;
 
 #[derive(Default, Debug)]
 pub(crate) struct Contributions {
@@ -48,8 +50,9 @@ impl Contributions {
         repo: &Repository,
         paths: &HashSet<PathBuf>,
         max_age: &Option<chrono::Duration>,
-        progress: impl Fn(usize, usize),
+        progress: impl Fn(usize, usize) + Sync,
     ) -> Result<HashMap<PathBuf, Self>> {
+        let completed = AtomicUsize::new(0);
         let mut walker = repo.revwalk()?;
         walker.push_head()?;
         log::debug!("counting commits");
@@ -70,7 +73,7 @@ impl Contributions {
                         }
                         // we don't want to count merge commits. but perhaps we should somehow?
                         if c.parents().count() == 1 {
-                            Some(c)
+                            Some(oid)
                         } else {
                             None
                         }
@@ -84,18 +87,26 @@ impl Contributions {
             .collect();
         let num_commits = commits.len();
         log::debug!("calculating contributions");
-        // TODO do this in parallel
+        let root = repo.workdir().unwrap_or_else(|| repo.path());
+        let get_repo = || -> Result<_> { Ok(Repository::discover(&root)?) };
+        let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
         let (contributions, _renames) = commits
-            .iter()
-            .enumerate()
-            .map(|(i, c)| {
+            .par_iter()
+            .map(|oid| -> Result<_> {
+                let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
+                let mailmap = repo.mailmap().ok();
+                let c = repo.find_commit(*oid).unwrap();
                 debug_assert!(c.parents().count() == 1);
                 let parent = c.parents().next().unwrap();
                 let mut contributions: HashMap<PathBuf, Self> = HashMap::new();
                 let mut renames = HashMap::new();
 
-                // TODO mailmap
-                if let Some(author) = c.author().email() {
+                let signature = if let Some(mm) = mailmap {
+                    mm.resolve_signature(&c.author())?
+                } else {
+                    c.author()
+                };
+                if let Some(author) = signature.email() {
                     let mut diff = repo.diff_tree_to_tree(
                         Some(&parent.tree()?),
                         Some(&c.tree()?),
@@ -106,15 +117,13 @@ impl Contributions {
                     diff.find_similar(None)?;
                     diff.foreach(
                         &mut |delta, _diff_progress| {
-                            if delta.new_file().exists() && delta.old_file().exists()
+                            if delta.new_file().exists()
+                                && delta.old_file().exists()
                                 && delta.old_file().path() != delta.new_file().path()
                             {
                                 let new = delta.new_file().path().unwrap().to_path_buf();
-                                renames.insert(
-                                    delta.old_file().path().unwrap().to_path_buf(),
-                                    new,
-                                );
-                            }                            
+                                renames.insert(delta.old_file().path().unwrap().to_path_buf(), new);
+                            }
                             true
                         },
                         None,
@@ -143,38 +152,44 @@ impl Contributions {
                 } else {
                     log::warn!("Commit {} has no valid author email", c.id());
                 }
-                progress(i, num_commits);
+
+                progress(
+                    completed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1,
+                    num_commits,
+                );
                 Ok((contributions, renames))
             })
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .reduce(|mut acc, other| {
-                let mut mapped = HashMap::new();
-                // TODO is the rename handling done correctly?
-                for (path, contributions) in acc.0 {
-                    if let Some(new_path) = other.1.get(&path) {
-                        mapped.insert(new_path.clone(), contributions);
-                    } else {
-                        mapped.insert(path, contributions);
-                    }
-                }
-                for (path, other_contributions) in other.0 {
-                    mapped.entry(path).or_default().merge(other_contributions);
-                }
-                'outer: for (other_old_path, other_new_path) in other.1 {
-                    // TODO do this with a better data structure
-                    for acc_new in acc.1.values_mut() {
-                        if *acc_new == other_old_path {
-                            *acc_new = other_new_path;
-                            // TODO or can there be multiple renames to the same path?
-                            break 'outer;
+            .reduce(
+                || Ok((HashMap::new(), HashMap::new())),
+                |acc, other| {
+                    let (acc_contributions, mut acc_renames) = acc?;
+                    let (other_contributions, other_renames) = other?;
+                    let mut mapped = HashMap::new();
+                    // TODO is the rename handling done correctly?
+                    for (path, contributions) in acc_contributions {
+                        if let Some(new_path) = other_renames.get(&path) {
+                            mapped.insert(new_path.clone(), contributions);
+                        } else {
+                            mapped.insert(path, contributions);
                         }
                     }
-                    acc.1.insert(other_old_path, other_new_path);
-                }
-                (mapped, acc.1)
-            })
-            .unwrap_or_default();
+                    for (path, contributions) in other_contributions {
+                        mapped.entry(path).or_default().merge(contributions);
+                    }
+                    'outer: for (other_old_path, other_new_path) in other_renames {
+                        // TODO do this with a better data structure
+                        for acc_new in acc_renames.values_mut() {
+                            if *acc_new == other_old_path {
+                                *acc_new = other_new_path;
+                                // TODO or can there be multiple renames to the same path?
+                                break 'outer;
+                            }
+                        }
+                        acc_renames.insert(other_old_path, other_new_path);
+                    }
+                    Ok((mapped, acc_renames))
+                },
+            )?;
         Ok(contributions)
     }
 
@@ -213,7 +228,7 @@ impl Contributions {
             .iter()
             .map(|(email, lines)| (email.clone(), *lines as f64 / self.total_lines as f64))
             .collect::<Vec<_>>();
-        authors.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(Ordering::Equal));
+        authors.sort_by(|(_, a), (_, b)| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
         authors.truncate(num_authors);
         let author_str = authors
             .into_iter()
