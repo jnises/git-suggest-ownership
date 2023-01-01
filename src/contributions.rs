@@ -94,18 +94,14 @@ impl Contributions {
             .par_iter()
             .map(|oid| -> Result<_> {
                 let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
-                let mailmap = repo.mailmap().ok();
+                let mailmap = repo.mailmap()?;
                 let c = repo.find_commit(*oid).unwrap();
                 debug_assert!(c.parents().count() == 1);
                 let parent = c.parents().next().unwrap();
                 let mut contributions: HashMap<PathBuf, Self> = HashMap::new();
                 let mut renames = HashMap::new();
 
-                let signature = if let Some(mm) = mailmap {
-                    mm.resolve_signature(&c.author())?
-                } else {
-                    c.author()
-                };
+                let signature = c.author_with_mailmap(&mailmap)?;
                 if let Some(author) = signature.email() {
                     let mut diff = repo.diff_tree_to_tree(
                         Some(&parent.tree()?),
