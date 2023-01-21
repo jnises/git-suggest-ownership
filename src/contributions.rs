@@ -6,7 +6,7 @@ use std::{
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, FixedOffset, NaiveDateTime, Utc};
-use git2::{BlameOptions, DiffFindOptions, DiffOptions, Repository};
+use git2::{BlameOptions, DiffOptions, Repository};
 use log::warn;
 use rayon::prelude::{IntoParallelRefIterator, ParallelIterator};
 use thread_local::ThreadLocal;
@@ -111,7 +111,7 @@ impl Contributions {
                         Some(DiffOptions::new().context_lines(0)),
                     )?;
                     // TODO we get more sensible numbers if we don't use find_similar, but then we don't get renames
-                    diff.find_similar(None);
+                    diff.find_similar(None)?;
                     diff.foreach(
                         &mut |delta, _diff_progress| {
                             if delta.new_file().exists()

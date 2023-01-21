@@ -16,6 +16,6 @@ stderrlog = "0.5"
 indicatif = { version = "0.17", features = ["improved_unicode"] }
 rayon = "1.5"
 thread_local = "1.1"
-git2 = { version = "0.15", default-features = false }
+git2 = { version = "0.16", default-features = false }
 humantime = "2.1.0"
 chrono = "0.4.23"
