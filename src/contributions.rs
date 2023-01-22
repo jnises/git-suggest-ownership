@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::atomic::AtomicUsize,
+    sync::{atomic::AtomicUsize, Arc},
 };
 
 use anyhow::{anyhow, Result};
@@ -56,46 +56,53 @@ impl Contributions {
         let mut walker = repo.revwalk()?;
         walker.push_head()?;
         log::debug!("counting commits");
-        let commits: Vec<_> = walker
-            .filter_map(|oid_res| {
-                match oid_res {
-                    Ok(oid) => {
-                        let c = repo.find_commit(oid).unwrap();
-                        if let Some(max_age) = max_age {
-                            let Ok(time) = git_time_to_utc_datetime(c.time()) else {
+        let commits: Vec<_> = {
+            let mut v: Vec<_> = walker
+                .filter_map(|oid_res| {
+                    match oid_res {
+                        Ok(oid) => {
+                            let c = repo.find_commit(oid).unwrap();
+                            if let Some(max_age) = max_age {
+                                let Ok(time) = git_time_to_utc_datetime(c.time()) else {
                                 log::warn!("Commit {} has no valid time. Ignoring.", c.id());
                                 return None;
                             };
-                            let age = Utc::now() - time;
-                            if age > *max_age {
-                                return None;
+                                let age = Utc::now() - time;
+                                if age > *max_age {
+                                    return None;
+                                }
+                            }
+                            // we don't want to count merge commits. but perhaps we should somehow?
+                            if c.parents().count() == 1 {
+                                Some(oid)
+                            } else {
+                                None
                             }
                         }
-                        // we don't want to count merge commits. but perhaps we should somehow?
-                        if c.parents().count() == 1 {
-                            Some(oid)
-                        } else {
+                        Err(e) => {
+                            log::warn!("error while walking commits: {e}");
                             None
                         }
                     }
-                    Err(e) => {
-                        log::warn!("error while walking commits: {e}");
-                        None
-                    }
-                }
-            })
-            .collect();
+                })
+                .collect();
+            // oldest first
+            v.reverse();
+            v
+        };
         let num_commits = commits.len();
         log::debug!("calculating contributions");
         let root = repo.workdir().unwrap_or_else(|| repo.path());
         let get_repo = || -> Result<_> { Ok(Repository::discover(root)?) };
         let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
         let contributions = commits
-            .par_iter()
+            //.par_iter()
+            .iter()
             .map(|oid| -> Result<_> {
                 let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
                 let mailmap = repo.mailmap()?;
                 let c = repo.find_commit(*oid).unwrap();
+                log::debug!("processing commit {}", c.id());
                 debug_assert!(c.parents().count() == 1);
                 let parent = c.parents().next().unwrap();
                 let mut contributions: HashMap<PathBuf, Self> = HashMap::new();
@@ -114,11 +121,11 @@ impl Contributions {
                     diff.find_similar(None)?;
                     diff.foreach(
                         &mut |delta, _diff_progress| {
-                            if delta.new_file().exists()
-                                && delta.old_file().exists()
+                            log::debug!("processing delta {:?}", delta);
+                            if delta.old_file().exists()
                                 && delta.old_file().path() != delta.new_file().path()
                             {
-                                let new = delta.new_file().path().unwrap().to_path_buf();
+                                let new = delta.new_file().path().map(|p| p.to_path_buf());
                                 let old = delta.old_file().path().unwrap().to_path_buf();
                                 renames.insert(old, new);
                             }
@@ -156,36 +163,50 @@ impl Contributions {
                 Ok((contributions, renames))
             })
             .reduce(
-                || Ok((HashMap::new(), HashMap::new())),
-                |acc, other| {
-                    let (acc_contributions, mut acc_renames) = acc?;
-                    let (other_contributions, other_renames) = other?;
+                //|| Ok((HashMap::new(), HashMap::new())),
+                |older, newer| {
+                    let (older_contributions, mut older_renames) = older?;
+                    let (newer_contributions, newer_renames) = newer?;
                     let mut mapped = HashMap::new();
                     // TODO is the rename handling done correctly?
-                    for (path, contributions) in acc_contributions {
-                        if let Some(new_path) = other_renames.get(&path) {
-                            mapped.insert(new_path.clone(), contributions);
-                        } else {
-                            mapped.insert(path, contributions);
-                        }
-                    }
-                    for (path, contributions) in other_contributions {
-                        mapped.entry(path).or_default().merge(contributions);
-                    }
-                    'outer: for (other_old_path, other_new_path) in other_renames {
-                        // TODO do this with a better data structure
-                        for acc_new in acc_renames.values_mut() {
-                            if *acc_new == other_old_path {
-                                *acc_new = other_new_path;
-                                // TODO or can there be multiple renames to the same path?
-                                break 'outer;
+                    // update older contributions using the newer renames
+                    for (old_path, contributions) in older_contributions {
+                        match newer_renames.get(&old_path) {
+                            Some(Some(new_path)) => {
+                                mapped.insert(new_path.clone(), contributions);
+                            }
+                            Some(None) => {
+                                // the file was removed. don't add it to the map
+                            }
+                            _ => {
+                                // not renamed, so just add it to the map
+                                mapped.insert(old_path, contributions);
                             }
                         }
-                        acc_renames.insert(other_old_path, other_new_path);
                     }
-                    Ok((mapped, acc_renames))
+                    // merge the contributions
+                    for (path, contributions) in newer_contributions {
+                        mapped.entry(path).or_default().merge(contributions);
+                    }
+                    // merge the rename mappings
+                    'outer: for (new_from_path, new_to_path) in newer_renames {
+                        // TODO do this with a better data structure
+                        for older_to_path in older_renames.values_mut() {
+                            match older_to_path {
+                                Some(path) if path == &new_from_path => {
+                                    *older_to_path = new_to_path;
+                                    // TODO or can there be multiple renames to the same path?
+                                    break 'outer;
+                                }
+                                _ => {}
+                            }
+                        }
+                        older_renames.insert(new_from_path, new_to_path);
+                    }
+                    Ok((mapped, older_renames))
                 },
-            )?
+            )
+            .unwrap()?
             .0
             .into_iter()
             .filter(|(p, _)| paths.contains(p))
