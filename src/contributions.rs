@@ -121,6 +121,7 @@ impl Contributions {
                     diff.find_similar(None)?;
                     diff.foreach(
                         &mut |delta, _diff_progress| {
+                            // TODO keep track of added files as well
                             log::debug!("processing delta {:?}", delta);
                             if delta.old_file().exists()
                                 && delta.old_file().path() != delta.new_file().path()
@@ -133,6 +134,7 @@ impl Contributions {
                         },
                         None,
                         Some(&mut |delta, hunk| {
+                            log::debug!("processing hunk {:?}", hunk);
                             if !delta.new_file().exists()
                                 || !matches!(
                                     delta.status(),
@@ -169,6 +171,7 @@ impl Contributions {
                     let (newer_contributions, newer_renames) = newer?;
                     let mut mapped = HashMap::new();
                     // TODO is the rename handling done correctly?
+                    // TODO if a file is added in `newer` what should happen to stuff from `older`? I guess it should be discarded?
                     // update older contributions using the newer renames
                     for (old_path, contributions) in older_contributions {
                         match newer_renames.get(&old_path) {
@@ -203,10 +206,12 @@ impl Contributions {
                         }
                         older_renames.insert(new_from_path, new_to_path);
                     }
+                    log::debug!("older_renames: {:?}", older_renames);
                     Ok((mapped, older_renames))
                 },
             )
             .unwrap()?
+            //?
             .0
             .into_iter()
             .filter(|(p, _)| paths.contains(p))
