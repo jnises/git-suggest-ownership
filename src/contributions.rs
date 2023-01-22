@@ -90,7 +90,7 @@ impl Contributions {
         let root = repo.workdir().unwrap_or_else(|| repo.path());
         let get_repo = || -> Result<_> { Ok(Repository::discover(root)?) };
         let repo_tls: ThreadLocal<Repository> = ThreadLocal::new();
-        let (contributions, _renames) = commits
+        let contributions = commits
             .par_iter()
             .map(|oid| -> Result<_> {
                 let repo = repo_tls.get_or_try(get_repo).expect("unable to get repo");
@@ -119,7 +119,8 @@ impl Contributions {
                                 && delta.old_file().path() != delta.new_file().path()
                             {
                                 let new = delta.new_file().path().unwrap().to_path_buf();
-                                renames.insert(delta.old_file().path().unwrap().to_path_buf(), new);
+                                let old = delta.old_file().path().unwrap().to_path_buf();
+                                renames.insert(old, new);
                             }
                             true
                         },
@@ -134,14 +135,12 @@ impl Contributions {
                                 return true;
                             }
                             let new = delta.new_file().path().unwrap().to_path_buf();
-                            if paths.contains(&new) {
-                                // TODO is this a sensible way to calculate it? better to count lines added, removed, and changed properly?
-                                let lines_changed = hunk.old_lines().max(hunk.new_lines());
-                                contributions
-                                    .entry(new)
-                                    .or_default()
-                                    .add_lines(author.to_string(), lines_changed as usize);
-                            }
+                            // TODO is this a sensible way to calculate it? better to count lines added, removed, and changed properly?
+                            let lines_changed = hunk.old_lines().max(hunk.new_lines());
+                            contributions
+                                .entry(new)
+                                .or_default()
+                                .add_lines(author.to_string(), lines_changed as usize);
                             true
                         }),
                         None,
@@ -186,7 +185,11 @@ impl Contributions {
                     }
                     Ok((mapped, acc_renames))
                 },
-            )?;
+            )?
+            .0
+            .into_iter()
+            .filter(|(p, _)| paths.contains(p))
+            .collect();
         Ok(contributions)
     }
 
